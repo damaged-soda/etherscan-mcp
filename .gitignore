@@ -1,3 +1,1 @@
-# ignore all external repos under src/
-src/*
-!src/.gitkeep
+# 默认保留 src 内容（单仓库模式，无需忽略）
