@@ -10,19 +10,17 @@ Etherscan MCP：单仓 Python 项目。用户提供 `ETHERSCAN_API_KEY`，通过
 
 ## 本地开发最小路径（只到开发自测）
 - 环境：Python 3.11（或兼容 3.10+）。
-- 安装：`cd src/etherscan-mcp` → （可选）创建虚拟环境 → `pip install -r requirements.txt`。
+- 安装：（可选）创建虚拟环境 → `pip install -r src/etherscan-mcp/requirements.txt`。
 - CLI：`ETHERSCAN_API_KEY=<key> [NETWORK=<network>|CHAIN_ID=<id>] [ETHERSCAN_BASE_URL=<url>] [CACHE_DIR=./.cache/etherscan] python -m app.cli fetch --address <contract>`，默认基址 `https://api.etherscan.io/v2/api`、默认 chainid=1（mainnet）；成功时输出含 `abi` 与 `source_files` 的 JSON；缺失/无效 key 时返回清晰错误。
-- MCP（Codex 本地注册示例，需 codex CLI 开启 rmcp_client）：  
-  1) 启用实验特性：`codex --enable rmcp_client`  
-  2) 添加服务器（使用 conda 环境 python，按需替换 KEY）：  
+- MCP（Codex 本地注册示例）：  
+  1) 在项目根执行，添加服务器（替换你的 Python 解释器与 KEY）：  
      ```bash
      codex mcp add etherscan-mcp \\
        --env ETHERSCAN_API_KEY=<your-api-key> \\
        --env CACHE_DIR=./.cache/etherscan \\
-       --cwd /Users/liyifan/Work/etherscan-mcp/src/etherscan-mcp \\
-       -- /opt/homebrew/Caskroom/miniconda/base/envs/etherscan-mcp/bin/python -m app.mcp_server --transport stdio
+       -- bash -lc "cd `pwd`/src/etherscan-mcp && python -m app.mcp_server --transport stdio"
      ```  
-  3) 工具：  
+  2) 工具：  
      - `fetch_contract(address, network?)`：ABI/源码/编译器信息。  
      - `get_contract_creation(address, network?)`：创建者、创建交易哈希、块高（静态可缓存）。  
      - `detect_proxy(address, network?)`：读取 EIP-1967 implementation/admin 槽，返回实现/管理员与证据。  
@@ -32,4 +30,4 @@ Etherscan MCP：单仓 Python 项目。用户提供 `ETHERSCAN_API_KEY`，通过
      - `get_storage_at(address, slot, network?, block_tag?)`：只读存储槽。  
      - `call_function(address, data, network?, block_tag?)`：eth_call 只读函数（data 为 ABI 编码输入）。  
      无需手动常驻进程，Codex 按需启动。
-- MCP 自测/重载提示：代码或工具列表变更后需重启 `python -m app.mcp_server ...`（或在 Codex 侧重新连接/重新添加 MCP）才能加载最新工具；可用主网示例地址用于快速验证（如 USDT `0xdAC17F958D2ee523a2206206994597C13D831ec7`、USDC `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48`）。
+- MCP 自测/重载提示：代码或工具列表变更后需在 Codex 侧重新连接/重新添加 MCP才能加载最新工具；可用主网示例地址用于快速验证（如 USDT `0xdAC17F958D2ee523a2206206994597C13D831ec7`、USDC `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48`）。
