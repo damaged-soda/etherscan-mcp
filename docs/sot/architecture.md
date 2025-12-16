@@ -3,18 +3,18 @@
 Last Updated: 2025-12-16
 
 ## 模块边界（按 repo 或关键模块描述）
-- config：读取环境变量（必需 `ETHERSCAN_API_KEY`，可选 `ETHERSCAN_BASE_URL`、`NETWORK`、`CACHE_DIR`），输出配置对象。
-- etherscan client：基于 requests 的 REST 封装（默认主网 baseUrl），带基础重试/简单节流，提供获取合约 ABI、源码、验证状态等方法。
-- cache：内存缓存，选配文件缓存目录 `./.cache/etherscan`，按地址+网络键控，缓存 ABI/源码。
-- service：聚合合约详情 `{ address, network, abi, source_files, compiler, verified }`，协调 client 与 cache，处理缺少 key、无效地址等错误。
-- entry：MCP handler、CLI 或简易 HTTP，消费 service，将合约信息提供给 Codex，本地运行即可。
-- tests/fixtures：client 与 service 层的单元测试及示例响应数据。
+- config：从环境读取配置（必需 `ETHERSCAN_API_KEY`；可选 `ETHERSCAN_BASE_URL`、`NETWORK`、`CHAIN_ID`、`CACHE_DIR`、`REQUEST_TIMEOUT`、`REQUEST_RETRIES`、`REQUEST_BACKOFF_SECONDS`），封装为配置对象。默认基址 `https://api.etherscan.io/v2/api`，默认 chainid=1（mainnet），NETWORK 可映射为 chainid（mainnet/ethereum/holesky/sepolia），或直接用 `CHAIN_ID` 覆盖。
+- etherscan client：基于 requests 的 REST 封装（默认 V2 基址），对 `contract.getsourcecode` 进行有限重试与简单退避，使用 `X-API-Key` 头并附带 `chainid` 参数。
+- cache：内存缓存，选配文件缓存目录（例如 `./.cache/etherscan`）；按地址+chainid 键控，序列化 JSON 落盘。
+- service：聚合合约详情 `{ address, network, chain_id, abi, source_files, compiler, verified }`，处理地址格式校验、网络/chainid 解析、缓存命中、Etherscan 响应解析（包含多文件 SourceCode JSON 支持），异常抛出可读错误。
+- entry：CLI 入口 `python -m app.cli fetch --address ... [--network ...]`，输出 JSON；尚未实现 MCP/HTTP 入口。
+- tests/fixtures：暂未实现。
 
 ## 关键约束 / 不变量
 - 单进程、单仓（src/etherscan-mcp），无跨进程依赖。
-- 运行环境：conda 创建的 Python 3.11（可兼容 3.10+），仅使用官方 Etherscan API，暂不涉及链上写操作。
-- 必需环境变量：`ETHERSCAN_API_KEY`；默认网络 mainnet，可通过配置覆盖 baseUrl/network。
-- 需有基础速率保护与有限重试，避免接口配额超限；缓存命中时不重复请求。
+- 运行环境：Python 3.11（兼容 3.10+），仅使用官方 Etherscan API，暂不涉及链上写操作。
+- 必需环境变量：`ETHERSCAN_API_KEY`；默认 network=mainnet、chainid=1，可通过 `NETWORK` 或 `CHAIN_ID` 覆盖，基址默认为 V2。
+- 基础重试与简单退避，避免接口配额超限；缓存命中时不重复请求。
 - 无外部持久化，仅可选本地文件缓存；日志简洁、可读性优先。
 
 ## 跨 repo 交互（如适用）
