@@ -6,19 +6,23 @@ from typing import Any, Dict, Optional
 class ContractCache:
     """In-memory cache with optional file persistence."""
 
-    def __init__(self, cache_dir: Optional[str] = None) -> None:
+    def __init__(self, cache_dir: Optional[str] = None, namespace: Optional[str] = None) -> None:
         self._memory: Dict[str, Any] = {}
+        self.namespace = namespace
         self.cache_dir = Path(cache_dir) if cache_dir else None
         if self.cache_dir:
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            root = self.cache_dir / namespace if namespace else self.cache_dir
+            root.mkdir(parents=True, exist_ok=True)
 
     def _key(self, address: str, network: str) -> str:
-        return f"{network}:{address.lower()}"
+        prefix = f"{self.namespace}:" if self.namespace else ""
+        return f"{prefix}{network}:{address.lower()}"
 
     def _file_path(self, address: str, network: str) -> Optional[Path]:
         if not self.cache_dir:
             return None
-        return self.cache_dir / network / f"{address.lower()}.json"
+        base = self.cache_dir / self.namespace if self.namespace else self.cache_dir
+        return base / network / f"{address.lower()}.json"
 
     def get(self, address: str, network: str) -> Optional[Dict[str, Any]]:
         key = self._key(address, network)

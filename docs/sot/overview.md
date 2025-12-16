@@ -22,4 +22,14 @@ Etherscan MCP：单仓 Python 项目。用户提供 `ETHERSCAN_API_KEY`，通过
        --cwd /Users/liyifan/Work/etherscan-mcp/src/etherscan-mcp \\
        -- /opt/homebrew/Caskroom/miniconda/base/envs/etherscan-mcp/bin/python -m app.mcp_server --transport stdio
      ```  
-  3) 工具：`fetch_contract(address, network?)` 返回与 CLI 一致的结构。无需手动常驻进程，Codex 按需启动。
+  3) 工具：  
+     - `fetch_contract(address, network?)`：ABI/源码/编译器信息。  
+     - `get_contract_creation(address, network?)`：创建者、创建交易哈希、块高（静态可缓存）。  
+     - `detect_proxy(address, network?)`：读取 EIP-1967 implementation/admin 槽，返回实现/管理员与证据。  
+     - `list_transactions(address, network?, start_block?, end_block?, page?, offset?, sort?)`：普通交易分页。  
+     - `list_token_transfers(address, network?, token_type?, start_block?, end_block?, page?, offset?, sort?)`：ERC20/721/1155 转移分页。  
+     - `query_logs(address, network?, topics?, from_block?, to_block?, page?, offset?)`：按 topics 过滤日志。  
+     - `get_storage_at(address, slot, network?, block_tag?)`：只读存储槽。  
+     - `call_function(address, data, network?, block_tag?)`：eth_call 只读函数（data 为 ABI 编码输入）。  
+     无需手动常驻进程，Codex 按需启动。
+- MCP 自测/重载提示：代码或工具列表变更后需重启 `python -m app.mcp_server ...`（或在 Codex 侧重新连接/重新添加 MCP）才能加载最新工具；可用主网示例地址用于快速验证（如 USDT `0xdAC17F958D2ee523a2206206994597C13D831ec7`、USDC `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48`）。
