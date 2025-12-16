@@ -7,7 +7,7 @@ Last Updated: 2025-12-16
 - etherscan client：基于 requests 的 REST 封装（默认 V2 基址），对 `contract.getsourcecode` 进行有限重试与简单退避，使用 `X-API-Key` 头并附带 `chainid` 参数。
 - cache：内存缓存，选配文件缓存目录（例如 `./.cache/etherscan`）；按地址+chainid 键控，序列化 JSON 落盘。
 - service：聚合合约详情 `{ address, network, chain_id, abi, source_files, compiler, verified }`，处理地址格式校验、网络/chainid 解析、缓存命中、Etherscan 响应解析（包含多文件 SourceCode JSON 支持），异常抛出可读错误。
-- entry：CLI 入口 `python -m app.cli fetch --address ... [--network ...]`，输出 JSON；尚未实现 MCP/HTTP 入口。
+- entry：CLI 入口 `python -m app.cli fetch --address ... [--network ...]`，输出 JSON；MCP 入口 `python -m app.mcp_server --transport stdio|sse|streamable-http`，提供工具 `fetch_contract(address, network?)`。
 - tests/fixtures：暂未实现。
 
 ## 关键约束 / 不变量
