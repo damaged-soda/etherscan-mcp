@@ -393,6 +393,22 @@ class ContractService:
         if "result" in payload and isinstance(payload.get("result"), str):
             return payload["result"]
 
+        # JSON-RPC style error object from Etherscan proxy endpoints
+        error_obj = payload.get("error")
+        if isinstance(error_obj, dict):
+            code = error_obj.get("code")
+            message = error_obj.get("message")
+            data = error_obj.get("data")
+            parts = []
+            if code is not None:
+                parts.append(f"code {code}")
+            if message:
+                parts.append(str(message))
+            if data:
+                parts.append(str(data))
+            detail = ": ".join(parts) if parts else "unknown error"
+            raise ValueError(f"Etherscan error: {detail}.")
+
         status = str(payload.get("status", "")).strip()
         message = payload.get("message", "")
         result = payload.get("result")

@@ -7,6 +7,7 @@ Last Updated: 2025-12-16
 - etherscan client：基于 requests 的 REST 封装（默认 V2 基址），对合约源码、创建信息、交易、代币转移、日志，以及 `proxy.eth_getStorageAt`/`proxy.eth_call` 等接口做有限重试与简单退避，使用 `X-API-Key` 头并附带 `chainid` 参数。
 - cache：内存缓存，选配文件缓存目录（例如 `./.cache/etherscan`）；按地址+chainid 键控，序列化 JSON 落盘；合约详情与创建信息使用不同命名空间，动态列表类接口默认不缓存。
 - service：聚合合约详情与调研能力，统一地址格式校验和 network/chainid 解析；解析 Etherscan 响应（包含多文件 SourceCode JSON）；新增能力：创建信息（可缓存）、代理检测（EIP-1967 implementation/admin 槽）、交易列表、代币转移列表（ERC20/721/1155）、日志查询、存储槽读取、eth_call 只读调用；动态接口对空结果返回空列表，对错误返回可读 ValueError。
+  - proxy/eth_call/eth_getStorageAt 错误处理：若 Etherscan 返回 JSON-RPC error 对象，透出其中的 code/message/data，避免“unknown error”。
 - entry：CLI 入口 `python -m app.cli fetch --address ... [--network ...]`，输出 JSON；MCP 入口 `python -m app.mcp_server --transport stdio|sse|streamable-http`，提供工具 `fetch_contract`、`get_contract_creation`、`detect_proxy`、`list_transactions`、`list_token_transfers`、`query_logs`、`get_storage_at`、`call_function`。
 - tests/fixtures：暂未实现。
 
