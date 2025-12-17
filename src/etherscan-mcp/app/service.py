@@ -268,6 +268,32 @@ class ContractService:
         selector, data = self._encode_function_call(function, args or [])
         return {"function": function, "selector": selector, "data": data}
 
+    def keccak(self, value: Any, input_type: Optional[str] = None) -> Dict[str, str]:
+        """Compute keccak-256; input_type: text|hex|bytes (default text, UTF-8)."""
+        normalized_type = (input_type or "text").lower()
+        if normalized_type not in {"text", "hex", "bytes"}:
+            raise ValueError("input_type must be one of: text, hex, bytes.")
+
+        if normalized_type == "text":
+            if not isinstance(value, str):
+                raise ValueError("For input_type=text, value must be a string.")
+            data = value.encode("utf-8")
+        elif normalized_type == "hex":
+            if not isinstance(value, str):
+                raise ValueError("For input_type=hex, value must be a hex string.")
+            normalized = self._normalize_hex_string(value, "value")
+            data = self._hex_to_bytes(normalized)
+        else:  # bytes
+            if isinstance(value, (bytes, bytearray)):
+                data = bytes(value)
+            elif isinstance(value, str):
+                data = value.encode("utf-8")
+            else:
+                raise ValueError("For input_type=bytes, value must be bytes-like or string.")
+
+        digest = self._keccak256(data)
+        return {"input_type": normalized_type, "data": "0x" + digest.hex()}
+
     def _prepare_context(self, address: str, network: Optional[str]) -> Tuple[str, str, str]:
         normalized_address = self._normalize_address(address)
         network_label, chain_id = self._resolve_network_and_chain(network)

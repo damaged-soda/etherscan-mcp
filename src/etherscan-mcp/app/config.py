@@ -6,6 +6,7 @@ DEFAULT_BASE_URL = "https://api.etherscan.io/v2/api"
 NETWORK_CHAIN_ID_MAP = {
     "mainnet": "1",
     "ethereum": "1",
+    "eth": "1",
     "sepolia": "11155111",
     "holesky": "17000",
 }
@@ -35,7 +36,8 @@ def resolve_chain_id(network: str, override_chain_id: Optional[str] = None) -> s
     if normalized in NETWORK_CHAIN_ID_MAP:
         return NETWORK_CHAIN_ID_MAP[normalized]
 
-    raise ValueError(f"Unknown network '{network}'. Provide CHAIN_ID explicitly.")
+    allowed = ", ".join(sorted(NETWORK_CHAIN_ID_MAP.keys()) + ["<chain_id>"])
+    raise ValueError(f"Unknown network '{network}'. Supported: {allowed}. Or provide CHAIN_ID explicitly.")
 
 
 def load_config() -> Config:

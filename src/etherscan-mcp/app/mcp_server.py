@@ -182,6 +182,16 @@ def encode_function_data(function: str, args: Optional[Any] = None) -> dict:
     return svc.encode_function_data(function, normalized_args)
 
 
+@server.tool(
+    name="keccak",
+    title="Keccak-256 Hash",
+    description="Compute keccak-256 hash. input_type: text|hex|bytes (default text, UTF-8). Returns 0x-prefixed hex.",
+)
+def keccak(value: Any, input_type: Optional[str] = None) -> dict:
+    svc = _get_service()
+    return svc.keccak(value, input_type)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Etherscan MCP server.")
     parser.add_argument(

@@ -33,3 +33,7 @@ Etherscan MCP：单仓 Python 项目。用户提供 `ETHERSCAN_API_KEY`，通过
      - 参数形态提醒：`call_function.args`、`encode_function_data.args`、`query_logs.topics` 必须是数组；传入字符串/对象会报错，标量会自动包成单元素数组。  
      无需手动常驻进程，Codex 按需启动。  
 - MCP 自测/重载提示：代码或工具列表变更后需在 Codex 侧重新连接/重新添加 MCP才能加载最新工具；可用主网示例地址用于快速验证（如 USDT `0xdAC17F958D2ee523a2206206994597C13D831ec7`、USDC `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48`）。
+
+## 网络参数支持
+- NETWORK 支持：`mainnet`/`ethereum`/`eth`（均指主网）、`sepolia`、`holesky`，或直接使用十进制 chain_id（字符串）/设置 `CHAIN_ID`。
+- 当 network 未被识别时，错误提示会列出支持值，并建议直接提供 `CHAIN_ID`。
