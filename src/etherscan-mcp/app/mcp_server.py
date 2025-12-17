@@ -3,7 +3,8 @@ MCP server exposing contract fetch capability via Etherscan V2.
 """
 
 import argparse
-from typing import Any, Optional, Sequence, Union
+from collections.abc import Mapping
+from typing import Any, Optional, Union
 
 from mcp.server.fastmcp import FastMCP
 
@@ -24,6 +25,25 @@ def _get_service() -> ContractService:
         cfg = load_config()
         _service = ContractService(cfg)
     return _service
+
+
+def _normalize_array_param(value: Optional[Any], name: str) -> Optional[list]:
+    """
+    Ensure a parameter intended as an array is actually treated as one:
+    - str/bytes: likely misuse, raise with guidance
+    - list/tuple: keep as list
+    - Mapping: reject (not an array)
+    - other scalars: auto-wrap into single-element list
+    """
+    if value is None:
+        return None
+    if isinstance(value, (str, bytes, bytearray)):
+        raise ValueError(f"{name} must be an array (e.g. ['0x...', 123]); got a string/bytes.")
+    if isinstance(value, Mapping):
+        raise ValueError(f"{name} must be an array, not an object/map.")
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
 
 
 @server.tool(
@@ -101,19 +121,20 @@ def list_token_transfers(
 @server.tool(
     name="query_logs",
     title="Query Logs",
-    description="Query contract logs by topics and block range.",
+    description="Query contract logs by topics and block range. `topics` must be an array of topic filters (use None for empty).",
 )
 def query_logs(
     address: str,
     network: Optional[str] = None,
-    topics: Optional[Sequence[Optional[str]]] = None,
+    topics: Optional[Any] = None,
     from_block: Optional[Union[int, str]] = None,
     to_block: Optional[Union[int, str]] = None,
     page: Optional[int] = None,
     offset: Optional[int] = None,
 ) -> dict:
     svc = _get_service()
-    return svc.query_logs(address, network, topics, from_block, to_block, page, offset)
+    normalized_topics = _normalize_array_param(topics, "topics")
+    return svc.query_logs(address, network, normalized_topics, from_block, to_block, page, offset)
 
 
 @server.tool(
@@ -134,7 +155,7 @@ def get_storage_at(
 @server.tool(
     name="call_function",
     title="Call Read-Only Function",
-    description="Call a contract read-only function via eth_call (ABI-aware decode when ABI is available).",
+    description="Call a contract read-only function via eth_call (ABI-aware decode when ABI is available). `args` must be an array (e.g. ['0x...', 123]).",
 )
 def call_function(
     address: str,
@@ -142,21 +163,23 @@ def call_function(
     network: Optional[str] = None,
     block_tag: Optional[str] = None,
     function: Optional[str] = None,
-    args: Optional[Sequence[Any]] = None,
+    args: Optional[Any] = None,
     decimals: Optional[Any] = None,
 ) -> dict:
     svc = _get_service()
-    return svc.call_function(address, data, network, block_tag, function, list(args) if args is not None else None, decimals)
+    normalized_args = _normalize_array_param(args, "args")
+    return svc.call_function(address, data, network, block_tag, function, normalized_args, decimals)
 
 
 @server.tool(
     name="encode_function_data",
     title="Encode Function Call",
-    description="Compute selector and ABI-encoded call data from function signature and arguments.",
+    description="Compute selector and ABI-encoded call data from function signature and arguments. `args` must be an array.",
 )
-def encode_function_data(function: str, args: Optional[Sequence[Any]] = None) -> dict:
+def encode_function_data(function: str, args: Optional[Any] = None) -> dict:
     svc = _get_service()
-    return svc.encode_function_data(function, list(args) if args is not None else None)
+    normalized_args = _normalize_array_param(args, "args")
+    return svc.encode_function_data(function, normalized_args)
 
 
 def main() -> None:

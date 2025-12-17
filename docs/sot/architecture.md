@@ -1,6 +1,6 @@
 # 架构说明（SOT）
 
-Last Updated: 2025-12-17
+Last Updated: 2025-12-18
 
 ## 模块边界（按 repo 或关键模块描述）
 - config：从环境读取配置（必需 `ETHERSCAN_API_KEY`；可选 `ETHERSCAN_BASE_URL`、`NETWORK`、`CHAIN_ID`、`CACHE_DIR`、`REQUEST_TIMEOUT`、`REQUEST_RETRIES`、`REQUEST_BACKOFF_SECONDS`），封装为配置对象。默认基址 `https://api.etherscan.io/v2/api`，默认 chainid=1（mainnet），NETWORK 可映射为 chainid（mainnet/ethereum/holesky/sepolia），或直接用 `CHAIN_ID` 覆盖。
@@ -12,6 +12,7 @@ Last Updated: 2025-12-17
   - call_function 输入校验与编码：基础检查 0x/偶数字节/至少 4 字节 selector；若 ContractCache/即时获取到 ABI，则校验 selector 并按静态参数校验最小长度；未命中自动 detect_proxy，识别 EIP-1967 代理后尝试实现 ABI，缺失实现 ABI 时不阻塞；支持 function+args 本地 ABI 编码（内置 Keccak-256/4byte）。
   - call_function 返回解码：有 ABI 时按 outputs 解码（含 tuple/数组），多返回值展开并返回 decoded（ok/error、函数信息、输出列表）；数值类支持可选 decimals hint 计算 value_scaled；原始返回 hex 保留在 data；无 ABI 或解码失败时 decoded 标注 error 但调用不抛异常。
 - entry：CLI 入口 `python -m app.cli fetch --address ... [--network ...]`，输出 JSON；MCP 入口 `python -m app.mcp_server --transport stdio|sse|streamable-http`，提供工具 `fetch_contract`、`get_contract_creation`、`detect_proxy`、`list_transactions`、`list_token_transfers`、`query_logs`、`get_storage_at`、`call_function`。
+- mcp_server 参数形态约束：对需要数组的参数（`call_function.args`、`encode_function_data.args`、`query_logs.topics`）在入口层做形态规范：list/tuple 保持，标量自动包成单元素数组，字符串/bytes 或对象直接报错并提示示例，避免被逐字符拆分。
 - tests/fixtures：暂未实现。
 
 ## 关键约束 / 不变量
