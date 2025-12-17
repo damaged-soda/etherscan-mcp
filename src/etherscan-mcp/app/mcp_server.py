@@ -134,7 +134,7 @@ def get_storage_at(
 @server.tool(
     name="call_function",
     title="Call Read-Only Function",
-    description="Call a contract read-only function via eth_call (data must be ABI-encoded).",
+    description="Call a contract read-only function via eth_call (ABI-aware decode when ABI is available).",
 )
 def call_function(
     address: str,
@@ -143,9 +143,10 @@ def call_function(
     block_tag: Optional[str] = None,
     function: Optional[str] = None,
     args: Optional[Sequence[Any]] = None,
+    decimals: Optional[Any] = None,
 ) -> dict:
     svc = _get_service()
-    return svc.call_function(address, data, network, block_tag, function, list(args) if args is not None else None)
+    return svc.call_function(address, data, network, block_tag, function, list(args) if args is not None else None, decimals)
 
 
 @server.tool(

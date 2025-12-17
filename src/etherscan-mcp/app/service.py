@@ -238,23 +238,31 @@ class ContractService:
         block_tag: Optional[str] = None,
         function: Optional[str] = None,
         args: Optional[List[Any]] = None,
+        decimals: Optional[Any] = None,
     ) -> Dict[str, Any]:
         normalized_address, network_label, chain_id = self._prepare_context(address, network)
-        normalized_data = self._prepare_call_data(
+        normalized_data, func_meta = self._prepare_call_data(
             data=data, function=function, args=args, address=normalized_address, chain_id=chain_id, network_label=network_label
         )
         tag = self._normalize_block_tag(block_tag)
 
         payload = self.client.call(normalized_address, normalized_data, tag)
         result = self._extract_proxy_result(payload)
+        decoded = self._decode_call_result(result, func_meta, decimals)
 
-        return {
+        response: Dict[str, Any] = {
             "address": normalized_address,
             "network": network_label,
             "chain_id": chain_id,
             "block_tag": tag,
             "data": result,
+            "decoded": decoded,
         }
+        if function:
+            response["function"] = function
+        if args is not None:
+            response["args"] = args
+        return response
 
     def encode_function_data(self, function: str, args: Optional[List[Any]] = None) -> Dict[str, str]:
         selector, data = self._encode_function_call(function, args or [])
@@ -274,17 +282,27 @@ class ContractService:
         address: str,
         chain_id: str,
         network_label: Optional[str],
-    ) -> str:
-        """Build or normalize call data; if ABI is cached (proxy-aware), validate selector and length."""
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Build or normalize call data; if ABI is cached (proxy-aware), validate selector and length. Returns data + function metadata."""
         if function:
             if data:
                 raise ValueError("Provide either function+args or data, not both.")
             selector_hex, encoded_data = self._encode_function_call(function, args or [])
             normalized = encoded_data
+            fn_name, input_types = self._parse_function_signature(function)
+            fn_signature = f"{fn_name}({','.join(input_types)})"
+            func_meta: Dict[str, Any] = {
+                "selector": selector_hex,
+                "name": fn_name,
+                "signature": fn_signature,
+                "source": "provided",
+                "entry": None,
+            }
         else:
             if not data:
                 raise ValueError("Either data or function+args is required.")
             normalized = self._normalize_hex_string(data, "data")
+            func_meta = {"selector": normalized[2:10], "name": None, "signature": None, "source": None, "entry": None}
 
         # data must include at least 4-byte selector (8 hex chars after 0x)
         if len(normalized) < 10:
@@ -317,6 +335,11 @@ class ContractService:
 
         # 1) cached ABI on the address itself
         cached = self.cache.get(address, chain_id)
+        if not cached:
+            try:
+                cached = self.fetch_contract(address, network_label)
+            except Exception:
+                cached = None
         if cached:
             add_selector_map(cached.get("abi"), "contract")
 
@@ -358,7 +381,14 @@ class ContractService:
             func_entry = selector_map[selector]
             inputs = func_entry.get("inputs", [])
             if not isinstance(inputs, list):
-                return normalized
+                func_meta["entry"] = func_entry
+                func_meta["source"] = source
+                func_meta["name"] = func_entry.get("name")
+                try:
+                    func_meta["signature"] = self._function_signature(func_meta["name"] or "", inputs)
+                except Exception:
+                    pass
+                return normalized, func_meta
 
             static_words = 0
             for inp in inputs:
@@ -377,7 +407,14 @@ class ContractService:
                 )
 
             # For dynamic args we only validate head length; tail length cannot be validated without decoding.
-            return normalized
+            func_meta["entry"] = func_entry
+            func_meta["source"] = source
+            func_meta["name"] = func_entry.get("name")
+            try:
+                func_meta["signature"] = self._function_signature(func_meta["name"] or "", inputs)
+            except Exception:
+                pass
+            return normalized, func_meta
 
         # If we have ABI info but selector not found:
         if available_selectors:
@@ -385,13 +422,363 @@ class ContractService:
             if proxy_info and proxy_info.get("is_proxy") and not any(
                 src == "implementation" for _, src in selector_maps
             ):
-                return normalized
+                return normalized, func_meta
             available = ", ".join(sorted(set(available_selectors)))
             raise ValueError(
                 f"Function selector 0x{selector} not found in cached ABI. Known selectors: {available or 'none'}."
             )
 
-        return normalized
+        return normalized, func_meta
+
+    def _decode_call_result(self, result_hex: str, func_meta: Dict[str, Any], decimals_hint: Optional[Any]) -> Dict[str, Any]:
+        decoded: Dict[str, Any] = {
+            "ok": False,
+            "error": None,
+            "selector": f"0x{func_meta.get('selector')}" if func_meta.get("selector") else None,
+            "function_name": func_meta.get("name"),
+            "function_signature": func_meta.get("signature"),
+            "source": func_meta.get("source"),
+            "outputs": [],
+        }
+
+        if not isinstance(result_hex, str):
+            decoded["error"] = "Unexpected non-hex result."
+            return decoded
+
+        raw_hex = result_hex if result_hex.startswith("0x") else f"0x{result_hex}"
+        entry = func_meta.get("entry")
+        if not isinstance(entry, dict):
+            decoded["error"] = "ABI not available for decoding."
+            return decoded
+
+        outputs = entry.get("outputs", [])
+        if not outputs:
+            decoded["ok"] = True
+            return decoded
+
+        try:
+            data_bytes = self._hex_to_bytes(raw_hex)
+            values = self._decode_outputs(outputs, data_bytes)
+            decimals_cfg = self._parse_decimals_hint(decimals_hint)
+            output_items: List[Dict[str, Any]] = []
+            for idx, (abi_out, value) in enumerate(zip(outputs, values)):
+                name = abi_out.get("name") or f"output{idx}"
+                typ = abi_out.get("type") or ""
+                item: Dict[str, Any] = {"name": name, "type": typ, "value": value}
+                if self._is_numeric_type(typ) and isinstance(value, int):
+                    dec = self._select_decimals(decimals_cfg, name, idx)
+                    if dec is not None:
+                        item["decimals"] = dec
+                        item["value_scaled"] = self._format_scaled_int(value, dec)
+                output_items.append(item)
+            decoded["outputs"] = output_items
+            decoded["ok"] = True
+        except Exception as exc:
+            decoded["error"] = f"Failed to decode result: {exc}"
+
+        return decoded
+
+    def _parse_decimals_hint(self, decimals_hint: Optional[Any]) -> Dict[str, Any]:
+        cfg: Dict[str, Any] = {"global": None, "names": {}, "indexes": {}}
+        if decimals_hint is None:
+            return cfg
+
+        def parse_value(val: Any) -> int:
+            if isinstance(val, bool):
+                raise ValueError("decimals must be a non-negative integer.")
+            if isinstance(val, (int, float)):
+                ivalue = int(val)
+            elif isinstance(val, str) and val.strip().lstrip("+").isdigit():
+                ivalue = int(val.strip())
+            else:
+                raise ValueError("decimals must be a non-negative integer.")
+            if ivalue < 0:
+                raise ValueError("decimals must be a non-negative integer.")
+            return ivalue
+
+        if isinstance(decimals_hint, (int, float, str)):
+            cfg["global"] = parse_value(decimals_hint)
+            return cfg
+
+        if isinstance(decimals_hint, dict):
+            for key, value in decimals_hint.items():
+                dec_value = parse_value(value)
+                if isinstance(key, int):
+                    cfg["indexes"][key] = dec_value
+                elif isinstance(key, str) and key.strip().isdigit():
+                    cfg["indexes"][int(key.strip())] = dec_value
+                else:
+                    cfg["names"][str(key)] = dec_value
+            return cfg
+
+        if isinstance(decimals_hint, (list, tuple)):
+            for idx, val in enumerate(decimals_hint):
+                cfg["indexes"][idx] = parse_value(val)
+            return cfg
+
+        raise ValueError("decimals hint must be int, str, list, or dict.")
+
+    def _select_decimals(self, cfg: Dict[str, Any], name: Optional[str], idx: int) -> Optional[int]:
+        if name is not None and name in cfg["names"]:
+            return cfg["names"][name]
+        if idx in cfg["indexes"]:
+            return cfg["indexes"][idx]
+        return cfg["global"]
+
+    def _format_scaled_int(self, value: int, decimals: int) -> str:
+        if decimals <= 0:
+            return str(value)
+        negative = value < 0
+        s = str(abs(value))
+        if len(s) <= decimals:
+            s = "0." + "0" * (decimals - len(s)) + s
+        else:
+            s = s[: len(s) - decimals] + "." + s[len(s) - decimals :]
+        s = s.rstrip("0").rstrip(".") or "0"
+        if negative:
+            s = "-" + s
+        return s
+
+    def _is_numeric_type(self, typ: str) -> bool:
+        return typ.startswith("uint") or typ.startswith("int")
+
+    def _decode_outputs(self, outputs: List[Dict[str, Any]], data_bytes: bytes) -> List[Any]:
+        offsets: List[int] = []
+        prepared: List[Tuple[str, List[Optional[int]], List[Dict[str, Any]]]] = []
+        cursor = 0
+        for entry in outputs:
+            typ = entry.get("type", "")
+            components = entry.get("components") or []
+            base_type, dims = self._split_array_dimensions(typ)
+            prepared.append((base_type, dims, components))
+            if self._is_dynamic_type_full(base_type, dims, components):
+                offsets.append(cursor)
+                cursor += 32
+            else:
+                size = self._static_type_size(base_type, dims, components)
+                offsets.append(cursor)
+                cursor += size
+
+        values: List[Any] = []
+        for off, (base_type, dims, components) in zip(offsets, prepared):
+            values.append(self._decode_type(base_type, dims, components, data_bytes, off, 0))
+        return values
+
+    def _decode_type(
+        self,
+        base_type: str,
+        dimensions: List[Optional[int]],
+        components: List[Dict[str, Any]],
+        data_bytes: bytes,
+        head_offset: int,
+        data_base: int,
+    ) -> Any:
+        if dimensions:
+            return self._decode_array(base_type, dimensions, components, data_bytes, head_offset, data_base)
+
+        # static word for inline static types or offset for dynamic
+        word = self._read_word(data_bytes, head_offset)
+        if base_type == "address":
+            return "0x" + word[-20:].hex()
+
+        if base_type.startswith("uint"):
+            bits = 256
+            suffix = base_type[4:]
+            if suffix:
+                bits = int(suffix)
+            if bits <= 0 or bits > 256 or bits % 8 != 0:
+                raise ValueError(f"Unsupported uint size {bits}.")
+            return int.from_bytes(word, "big")
+
+        if base_type.startswith("int"):
+            bits = 256
+            suffix = base_type[3:]
+            if suffix:
+                bits = int(suffix)
+            if bits <= 0 or bits > 256 or bits % 8 != 0:
+                raise ValueError(f"Unsupported int size {bits}.")
+            unsigned = int.from_bytes(word, "big")
+            sign_bit = 1 << (bits - 1)
+            mask = 1 << bits
+            return unsigned - mask if unsigned & sign_bit else unsigned
+
+        if base_type == "bool":
+            return bool(int.from_bytes(word, "big"))
+
+        if base_type == "bytes":
+            offset = int.from_bytes(word, "big")
+            start = data_base + offset
+            length = int.from_bytes(self._read_word(data_bytes, start), "big")
+            data_start = start + 32
+            data_end = data_start + length
+            if data_end > len(data_bytes):
+                raise ValueError("bytes out of range.")
+            return "0x" + data_bytes[data_start:data_end].hex()
+
+        if base_type == "string":
+            offset = int.from_bytes(word, "big")
+            start = data_base + offset
+            length = int.from_bytes(self._read_word(data_bytes, start), "big")
+            data_start = start + 32
+            data_end = data_start + length
+            if data_end > len(data_bytes):
+                raise ValueError("string out of range.")
+            try:
+                return data_bytes[data_start:data_end].decode("utf-8", errors="replace")
+            except Exception as exc:
+                raise ValueError("Failed to decode string.") from exc
+
+        if base_type.startswith("bytes"):
+            size_part = base_type[5:]
+            if not size_part.isdigit():
+                raise ValueError(f"Unsupported bytes type {base_type}.")
+            size = int(size_part)
+            if size <= 0 or size > 32:
+                raise ValueError("bytesN size must be between 1 and 32.")
+            return "0x" + word[:size].hex()
+
+        if base_type == "tuple":
+            is_dynamic_tuple = self._is_dynamic_type_full(base_type, [], components)
+            return self._decode_tuple(components, data_bytes, head_offset, data_base, is_dynamic_tuple)
+
+        raise ValueError(f"Unsupported ABI output type '{base_type}'.")
+
+    def _decode_array(
+        self,
+        base_type: str,
+        dimensions: List[Optional[int]],
+        components: List[Dict[str, Any]],
+        data_bytes: bytes,
+        head_offset: int,
+        data_base: int,
+    ) -> Any:
+        dim = dimensions[0]
+        remaining_dims = dimensions[1:]
+        element_dynamic = self._is_dynamic_type_full(base_type, remaining_dims, components)
+
+        if dim is None or element_dynamic:
+            # dynamic array or static array containing dynamic elements -> treated as dynamic
+            offset = int.from_bytes(self._read_word(data_bytes, head_offset), "big")
+            array_base = data_base + offset
+            length = int.from_bytes(self._read_word(data_bytes, array_base), "big")
+            values: List[Any] = []
+            head_start = array_base + 32
+            element_head_size = (
+                32 if element_dynamic else self._static_type_size(base_type, remaining_dims, components)
+            )
+            for idx in range(length):
+                elem_head = head_start + element_head_size * idx
+                values.append(
+                    self._decode_type(base_type, remaining_dims, components, data_bytes, elem_head, array_base)
+                )
+            return values
+
+        # static array with static elements
+        length = dim
+        element_size = self._static_type_size(base_type, remaining_dims, components)
+        values = []
+        for idx in range(length):
+            elem_head = head_offset + element_size * idx
+            values.append(
+                self._decode_type(base_type, remaining_dims, components, data_bytes, elem_head, data_base)
+            )
+        return values
+
+    def _decode_tuple(
+        self,
+        components: List[Dict[str, Any]],
+        data_bytes: bytes,
+        head_offset: int,
+        data_base: int,
+        is_dynamic: bool,
+    ) -> Dict[str, Any]:
+        tuple_base = data_base + int.from_bytes(self._read_word(data_bytes, head_offset), "big") if is_dynamic else head_offset
+        values = self._decode_components(components, data_bytes, tuple_base)
+        obj: Dict[str, Any] = {}
+        for idx, (comp, val) in enumerate(zip(components, values)):
+            name = comp.get("name") or f"field{idx}"
+            obj[name] = val
+        return obj
+
+    def _decode_components(self, components: List[Dict[str, Any]], data_bytes: bytes, base_offset: int) -> List[Any]:
+        offsets: List[int] = []
+        prepared: List[Tuple[str, List[Optional[int]], List[Dict[str, Any]]]] = []
+        cursor = 0
+        for comp in components:
+            typ = comp.get("type", "")
+            comp_components = comp.get("components") or []
+            base_type, dims = self._split_array_dimensions(typ)
+            prepared.append((base_type, dims, comp_components))
+            if self._is_dynamic_type_full(base_type, dims, comp_components):
+                offsets.append(cursor)
+                cursor += 32
+            else:
+                size = self._static_type_size(base_type, dims, comp_components)
+                offsets.append(cursor)
+                cursor += size
+
+        values: List[Any] = []
+        for off, (base_type, dims, comp_components) in zip(offsets, prepared):
+            values.append(self._decode_type(base_type, dims, comp_components, data_bytes, base_offset + off, base_offset))
+        return values
+
+    def _is_dynamic_type_full(
+        self, base_type: str, dimensions: List[Optional[int]], components: List[Dict[str, Any]]
+    ) -> bool:
+        if dimensions:
+            if dimensions[0] is None:
+                return True
+            return self._is_dynamic_type_full(base_type, dimensions[1:], components)
+
+        if base_type in {"bytes", "string"}:
+            return True
+        if base_type == "tuple":
+            if not components:
+                return True
+            return any(
+                self._is_dynamic_type_full(
+                    *self._split_array_dimensions(comp.get("type", "")), comp.get("components") or []
+                )
+                for comp in components
+            )
+        return False
+
+    def _static_type_size(
+        self, base_type: str, dimensions: List[Optional[int]], components: List[Dict[str, Any]]
+    ) -> int:
+        if self._is_dynamic_type_full(base_type, dimensions, components):
+            raise ValueError("Type is dynamic; size unknown.")
+
+        if dimensions:
+            dim = dimensions[0]
+            if dim is None:
+                raise ValueError("Dynamic dimensions not supported in static size calculation.")
+            return dim * self._static_type_size(base_type, dimensions[1:], components)
+
+        if base_type == "tuple":
+            size = 0
+            for comp in components:
+                comp_base, comp_dims = self._split_array_dimensions(comp.get("type", ""))
+                size += self._static_type_size(comp_base, comp_dims, comp.get("components") or [])
+            return size
+
+        return 32
+
+    def _read_word(self, data_bytes: bytes, offset: int) -> bytes:
+        end = offset + 32
+        if end > len(data_bytes):
+            raise ValueError("Result shorter than expected for ABI decoding.")
+        return data_bytes[offset:end]
+
+    def _hex_to_bytes(self, value: str) -> bytes:
+        if not isinstance(value, str):
+            raise ValueError("Result must be a hex string.")
+        v = value[2:] if value.startswith("0x") else value
+        if len(v) % 2 != 0:
+            v = "0" + v
+        if not re.fullmatch(r"[0-9a-fA-F]*", v):
+            raise ValueError("Result must be a hex string.")
+        return bytes.fromhex(v)
 
     def _encode_function_call(self, function: str, args: List[Any]) -> Tuple[str, str]:
         """Encode function selector + arguments into hex data."""
