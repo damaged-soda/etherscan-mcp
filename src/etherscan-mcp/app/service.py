@@ -42,6 +42,9 @@ class ContractService:
         payload = self.client.get_contract_source(normalized_address)
         parsed = self._parse_contract_response(payload, normalized_address, network_label, chain_id)
         self.cache.set(normalized_address, chain_id, parsed)
+        proxy_info = self._proxy_info_from_contract(parsed)
+        if proxy_info:
+            self.proxy_cache.set(normalized_address, chain_id, proxy_info)
         return parsed
 
     def get_contract_creation(self, address: str, network: Optional[str] = None) -> Dict[str, Any]:
@@ -336,8 +339,11 @@ class ContractService:
 
         selector = normalized[2:10]
         selector_maps: List[Tuple[Dict[str, Dict[str, Any]], str]] = []
+        implementation_hint: Optional[str] = None
+        loaded_impl_address: Optional[str] = None
+        proxy_info: Optional[Dict[str, Any]] = None
 
-        def add_selector_map(abi_obj: Any, source: str) -> None:
+        def add_selector_map(abi_obj: Any, source: str, prefer: bool = False) -> None:
             if not isinstance(abi_obj, list):
                 return
             functions = [
@@ -357,7 +363,22 @@ class ContractService:
                 except Exception:
                     continue
             if selector_map:
-                selector_maps.append((selector_map, source))
+                if prefer:
+                    selector_maps.insert(0, (selector_map, source))
+                else:
+                    selector_maps.append((selector_map, source))
+
+        def load_contract_abi(target: str, source: str, prefer: bool = False) -> Optional[Dict[str, Any]]:
+            impl_cached = self.cache.get(target, chain_id)
+            impl_data = impl_cached
+            if not impl_data:
+                try:
+                    impl_data = self.fetch_contract(target, network_label)
+                except Exception:
+                    impl_data = None
+            if impl_data:
+                add_selector_map(impl_data.get("abi"), source, prefer=prefer)
+            return impl_data
 
         # 1) cached ABI on the address itself
         cached = self.cache.get(address, chain_id)
@@ -368,6 +389,14 @@ class ContractService:
                 cached = None
         if cached:
             add_selector_map(cached.get("abi"), "contract")
+            implementation_hint = self._normalize_address_optional(cached.get("implementation"))
+            proxy_info = self._proxy_info_from_contract(cached)
+
+        # 1.5) if we know implementation from metadata, prefer its ABI
+        if implementation_hint and implementation_hint != address:
+            impl_data = load_contract_abi(implementation_hint, "implementation", prefer=True)
+            if impl_data:
+                loaded_impl_address = implementation_hint
 
         # 2) proxy-aware: if selector not found yet, try detect proxy and implementation ABI
         need_proxy_lookup = True
@@ -376,27 +405,25 @@ class ContractService:
                 need_proxy_lookup = False
                 break
 
-        proxy_info = None
         if need_proxy_lookup:
-            proxy_info = self.proxy_cache.get(address, chain_id)
             if proxy_info is None:
+                proxy_info = self.proxy_cache.get(address, chain_id)
+            needs_detect = proxy_info is None or (
+                proxy_info.get("is_proxy") and not proxy_info.get("implementation")
+            )
+            if needs_detect:
                 try:
                     proxy_info = self.detect_proxy(address, network_label)
+                    self.proxy_cache.set(address, chain_id, proxy_info)
                 except Exception:
-                    proxy_info = {"is_proxy": False}
-                self.proxy_cache.set(address, chain_id, proxy_info)
+                    proxy_info = None
 
-            if proxy_info.get("is_proxy") and proxy_info.get("implementation"):
-                impl_address = proxy_info["implementation"]
-                impl_cached = self.cache.get(impl_address, chain_id)
-                impl_data = impl_cached
-                if not impl_data:
-                    try:
-                        impl_data = self.fetch_contract(impl_address, network_label)
-                    except Exception:
-                        impl_data = None
-                if impl_data:
-                    add_selector_map(impl_data.get("abi"), "implementation")
+            if proxy_info and proxy_info.get("is_proxy") and proxy_info.get("implementation"):
+                impl_address = self._normalize_address_optional(proxy_info.get("implementation"))
+                if impl_address and impl_address != address and impl_address != loaded_impl_address:
+                    impl_data = load_contract_abi(impl_address, "implementation", prefer=True)
+                    if impl_data:
+                        loaded_impl_address = impl_address
 
         # Validate against available selector maps (prefer implementation if present by insertion order)
         available_selectors: List[str] = []
@@ -846,6 +873,14 @@ class ContractService:
 
         return candidate.lower()
 
+    def _normalize_address_optional(self, address: Any) -> Optional[str]:
+        if address is None:
+            return None
+        try:
+            return self._normalize_address(str(address))
+        except Exception:
+            return None
+
     def _resolve_network_and_chain(self, network: Optional[str]) -> Tuple[str, str]:
         if network:
             chain_id = resolve_chain_id(network)
@@ -880,6 +915,11 @@ class ContractService:
         abi = self._parse_abi(abi_raw)
         source_files = self._parse_source_code(entry.get("SourceCode", ""))
         compiler = entry.get("CompilerVersion") or ""
+        proxy_flag = str(entry.get("Proxy", "")).strip().lower()
+        is_proxy = proxy_flag in {"1", "true", "yes"}
+        implementation = self._normalize_address_optional(entry.get("Implementation"))
+        if implementation:
+            is_proxy = True
 
         return {
             "address": address,
@@ -889,6 +929,30 @@ class ContractService:
             "source_files": source_files,
             "compiler": compiler,
             "verified": True,
+            "proxy": is_proxy,
+            "implementation": implementation,
+            "proxy_type": "etherscan" if is_proxy else None,
+        }
+
+    def _proxy_info_from_contract(self, contract: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        if not isinstance(contract, dict):
+            return None
+        impl = self._normalize_address_optional(contract.get("implementation"))
+        is_proxy = bool(contract.get("proxy")) or bool(impl)
+        if not is_proxy:
+            return None
+        evidence = ["Etherscan getsourcecode Proxy/Implementation fields"]
+        if impl:
+            evidence.append(f"implementation field -> {impl}")
+        return {
+            "address": contract.get("address"),
+            "network": contract.get("network"),
+            "chain_id": contract.get("chain_id"),
+            "is_proxy": True,
+            "implementation": impl,
+            "admin": None,
+            "proxy_type": contract.get("proxy_type") or "etherscan",
+            "evidence": evidence,
         }
 
     def _parse_abi(self, abi_raw: str) -> Any:
