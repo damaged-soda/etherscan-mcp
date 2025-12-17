@@ -20,9 +20,9 @@ class ContractService:
 
     def __init__(self, config: Config) -> None:
         self.config = config
-        self.cache = ContractCache(config.cache_dir)
-        self.creation_cache = ContractCache(config.cache_dir, namespace="creation")
-        self.proxy_cache = ContractCache(config.cache_dir, namespace="proxy")
+        self.cache = ContractCache()
+        self.creation_cache = ContractCache()
+        self.proxy_cache = ContractCache()
         self.client = EtherscanClient(
             api_key=config.api_key,
             base_url=config.base_url,

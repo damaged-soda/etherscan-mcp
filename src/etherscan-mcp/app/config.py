@@ -18,7 +18,6 @@ class Config:
     base_url: str = DEFAULT_BASE_URL
     network: str = "mainnet"
     chain_id: str = "1"
-    cache_dir: Optional[str] = None
     request_timeout: int = 10
     max_retries: int = 3
     backoff_seconds: float = 0.5
@@ -49,7 +48,6 @@ def load_config() -> Config:
     base_url = os.getenv("ETHERSCAN_BASE_URL", DEFAULT_BASE_URL).rstrip("/")
     network = os.getenv("NETWORK", "mainnet").lower()
     chain_id_env = os.getenv("CHAIN_ID")
-    cache_dir = os.getenv("CACHE_DIR")
     timeout = int(os.getenv("REQUEST_TIMEOUT", "10"))
     max_retries = int(os.getenv("REQUEST_RETRIES", "3"))
     backoff = float(os.getenv("REQUEST_BACKOFF_SECONDS", "0.5"))
@@ -61,7 +59,6 @@ def load_config() -> Config:
         base_url=base_url,
         network=network,
         chain_id=chain_id,
-        cache_dir=cache_dir,
         request_timeout=timeout,
         max_retries=max_retries,
         backoff_seconds=backoff,

@@ -25,7 +25,6 @@ pip install -r src/etherscan-mcp/requirements.txt
 - `NETWORK`（可选，默认 `mainnet`）：可选 `mainnet|ethereum|sepolia|holesky`，或传数字 chainId。
 - `CHAIN_ID`（可选）：覆盖 network 推导的 chainId。
 - `ETHERSCAN_BASE_URL`（可选，默认 `https://api.etherscan.io/v2/api`）。
-- `CACHE_DIR`（可选）：文件缓存目录，例如 `./.cache/etherscan`。
 - `REQUEST_TIMEOUT`（秒，默认 10）、`REQUEST_RETRIES`（默认 3）、`REQUEST_BACKOFF_SECONDS`（默认 0.5）。
 
 ## MCP 使用
@@ -33,6 +32,5 @@ pip install -r src/etherscan-mcp/requirements.txt
 ```bash
 codex mcp add etherscan-mcp \
   --env ETHERSCAN_API_KEY=<your-api-key> \
-  --env CACHE_DIR=./.cache/etherscan \
   -- bash -lc "cd `pwd`/src/etherscan-mcp && python -m app.mcp_server --transport stdio"
 ```
