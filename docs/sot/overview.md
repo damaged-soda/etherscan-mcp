@@ -28,6 +28,7 @@ Etherscan MCP：单仓 Python 项目。用户提供 `ETHERSCAN_API_KEY`，通过
      - `list_token_transfers(address, network?, token_type?, start_block?, end_block?, page?, offset?, sort?)`：ERC20/721/1155 转移分页。  
      - `query_logs(address, network?, topics?, from_block?, to_block?, page?, offset?)`：按 topics 过滤日志。  
      - `get_storage_at(address, slot, network?, block_tag?)`：只读存储槽。  
-     - `call_function(address, data, network?, block_tag?)`：eth_call 只读函数（data 为 ABI 编码输入）。  
+     - `call_function(address, data?, function?, args?, network?, block_tag?)`：eth_call 只读函数；支持直接传 ABI 编码的 `data`，也支持提供 `function`+`args` 自动编码。  
+     - `encode_function_data(function, args?)`：纯本地计算 4byte selector 与 ABI 编码 data，便于构造调用。  
      无需手动常驻进程，Codex 按需启动。
 - MCP 自测/重载提示：代码或工具列表变更后需在 Codex 侧重新连接/重新添加 MCP才能加载最新工具；可用主网示例地址用于快速验证（如 USDT `0xdAC17F958D2ee523a2206206994597C13D831ec7`、USDC `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48`）。

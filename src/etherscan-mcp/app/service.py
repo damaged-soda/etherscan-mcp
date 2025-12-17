@@ -1,6 +1,7 @@
 import json
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+import hashlib
 
 from .cache import ContractCache
 from .config import Config, resolve_chain_id
@@ -21,6 +22,7 @@ class ContractService:
         self.config = config
         self.cache = ContractCache(config.cache_dir)
         self.creation_cache = ContractCache(config.cache_dir, namespace="creation")
+        self.proxy_cache = ContractCache(config.cache_dir, namespace="proxy")
         self.client = EtherscanClient(
             api_key=config.api_key,
             base_url=config.base_url,
@@ -231,12 +233,16 @@ class ContractService:
     def call_function(
         self,
         address: str,
-        data: str,
+        data: Optional[str] = None,
         network: Optional[str] = None,
         block_tag: Optional[str] = None,
+        function: Optional[str] = None,
+        args: Optional[List[Any]] = None,
     ) -> Dict[str, Any]:
         normalized_address, network_label, chain_id = self._prepare_context(address, network)
-        normalized_data = self._normalize_hex_string(data, "data")
+        normalized_data = self._prepare_call_data(
+            data=data, function=function, args=args, address=normalized_address, chain_id=chain_id, network_label=network_label
+        )
         tag = self._normalize_block_tag(block_tag)
 
         payload = self.client.call(normalized_address, normalized_data, tag)
@@ -250,11 +256,169 @@ class ContractService:
             "data": result,
         }
 
+    def encode_function_data(self, function: str, args: Optional[List[Any]] = None) -> Dict[str, str]:
+        selector, data = self._encode_function_call(function, args or [])
+        return {"function": function, "selector": selector, "data": data}
+
     def _prepare_context(self, address: str, network: Optional[str]) -> Tuple[str, str, str]:
         normalized_address = self._normalize_address(address)
         network_label, chain_id = self._resolve_network_and_chain(network)
         self.client.chain_id = chain_id
         return normalized_address, network_label, chain_id
+
+    def _prepare_call_data(
+        self,
+        data: Optional[str],
+        function: Optional[str],
+        args: Optional[List[Any]],
+        address: str,
+        chain_id: str,
+        network_label: Optional[str],
+    ) -> str:
+        """Build or normalize call data; if ABI is cached (proxy-aware), validate selector and length."""
+        if function:
+            if data:
+                raise ValueError("Provide either function+args or data, not both.")
+            selector_hex, encoded_data = self._encode_function_call(function, args or [])
+            normalized = encoded_data
+        else:
+            if not data:
+                raise ValueError("Either data or function+args is required.")
+            normalized = self._normalize_hex_string(data, "data")
+
+        # data must include at least 4-byte selector (8 hex chars after 0x)
+        if len(normalized) < 10:
+            raise ValueError("data must include 4-byte function selector.")
+
+        selector = normalized[2:10]
+        selector_maps: List[Tuple[Dict[str, Dict[str, Any]], str]] = []
+
+        def add_selector_map(abi_obj: Any, source: str) -> None:
+            if not isinstance(abi_obj, list):
+                return
+            functions = [
+                entry for entry in abi_obj if isinstance(entry, dict) and entry.get("type") == "function"
+            ]
+            selector_map: Dict[str, Dict[str, Any]] = {}
+            for entry in functions:
+                name = entry.get("name")
+                inputs = entry.get("inputs", [])
+                if not name or not isinstance(inputs, list):
+                    continue
+                try:
+                    sig = self._function_signature(name, inputs)
+                    sel = self._selector_hex(sig)
+                    if sel:
+                        selector_map[sel] = entry
+                except Exception:
+                    continue
+            if selector_map:
+                selector_maps.append((selector_map, source))
+
+        # 1) cached ABI on the address itself
+        cached = self.cache.get(address, chain_id)
+        if cached:
+            add_selector_map(cached.get("abi"), "contract")
+
+        # 2) proxy-aware: if selector not found yet, try detect proxy and implementation ABI
+        need_proxy_lookup = True
+        for selector_map, _ in selector_maps:
+            if selector in selector_map:
+                need_proxy_lookup = False
+                break
+
+        proxy_info = None
+        if need_proxy_lookup:
+            proxy_info = self.proxy_cache.get(address, chain_id)
+            if proxy_info is None:
+                try:
+                    proxy_info = self.detect_proxy(address, network_label)
+                except Exception:
+                    proxy_info = {"is_proxy": False}
+                self.proxy_cache.set(address, chain_id, proxy_info)
+
+            if proxy_info.get("is_proxy") and proxy_info.get("implementation"):
+                impl_address = proxy_info["implementation"]
+                impl_cached = self.cache.get(impl_address, chain_id)
+                impl_data = impl_cached
+                if not impl_data:
+                    try:
+                        impl_data = self.fetch_contract(impl_address, network_label)
+                    except Exception:
+                        impl_data = None
+                if impl_data:
+                    add_selector_map(impl_data.get("abi"), "implementation")
+
+        # Validate against available selector maps (prefer implementation if present by insertion order)
+        available_selectors: List[str] = []
+        for selector_map, source in selector_maps:
+            available_selectors.extend(selector_map.keys())
+            if selector not in selector_map:
+                continue
+            func_entry = selector_map[selector]
+            inputs = func_entry.get("inputs", [])
+            if not isinstance(inputs, list):
+                return normalized
+
+            static_words = 0
+            for inp in inputs:
+                typ = inp.get("type")
+                if not isinstance(typ, str):
+                    continue
+                if self._is_dynamic_type(typ):
+                    continue
+                static_words += 1
+
+            min_length = 10 + static_words * 64  # 0x + selector(8 hex) + 32 bytes per static arg
+            if len(normalized) < min_length:
+                raise ValueError(
+                    f"data too short for function {func_entry.get('name','?')}: "
+                    f"expected at least {min_length - 2} hex chars (selector + {static_words} static args)."
+                )
+
+            # For dynamic args we only validate head length; tail length cannot be validated without decoding.
+            return normalized
+
+        # If we have ABI info but selector not found:
+        if available_selectors:
+            # If proxy and no implementation ABI, allow call to proceed (avoid blocking proxies with missing impl ABI)
+            if proxy_info and proxy_info.get("is_proxy") and not any(
+                src == "implementation" for _, src in selector_maps
+            ):
+                return normalized
+            available = ", ".join(sorted(set(available_selectors)))
+            raise ValueError(
+                f"Function selector 0x{selector} not found in cached ABI. Known selectors: {available or 'none'}."
+            )
+
+        return normalized
+
+    def _encode_function_call(self, function: str, args: List[Any]) -> Tuple[str, str]:
+        """Encode function selector + arguments into hex data."""
+        fn_name, input_types = self._parse_function_signature(function)
+        if len(input_types) != len(args):
+            raise ValueError(f"Argument count mismatch: expected {len(input_types)}, got {len(args)}.")
+
+        selector = self._selector_hex(f"{fn_name}({','.join(input_types)})")
+        if not selector:
+            raise ValueError("Failed to compute function selector.")
+
+        head_parts: List[bytes] = []
+        tail_parts: List[bytes] = []
+        dynamic_offset = 32 * len(input_types)
+
+        for typ, value in zip(input_types, args):
+            enc, dynamic = self._encode_abi_value(typ, value)
+            if dynamic:
+                # head contains offset to current tail start
+                head_parts.append(self._pad32(dynamic_offset.to_bytes(32, "big")))
+                tail_parts.append(enc)
+                dynamic_offset += len(enc)
+            else:
+                head_parts.append(enc)
+
+        data_bytes = b"".join(head_parts + tail_parts)
+        return selector, "0x" + selector + data_bytes.hex()
 
     def _normalize_address(self, address: str) -> str:
         if not isinstance(address, str):
@@ -508,6 +672,343 @@ class ContractService:
         if pad_to:
             candidate = f"0x{hex_body.rjust(pad_to, '0')}"
         return candidate
+
+    def _function_signature(self, name: str, inputs: List[Dict[str, Any]]) -> str:
+        types: List[str] = []
+        for inp in inputs:
+            typ = inp.get("type")
+            if not isinstance(typ, str):
+                raise ValueError("Invalid ABI input type.")
+            types.append(typ)
+        return f"{name}({','.join(types)})"
+
+    def _selector_hex(self, signature: str) -> Optional[str]:
+        try:
+            import sha3  # type: ignore
+
+            hasher = sha3.keccak_256()  # correct keccak-256 for Ethereum
+            hasher.update(signature.encode())
+            return hasher.hexdigest()[:8]
+        except Exception:
+            pass
+
+        try:
+            hasher = hashlib.new("keccak256")
+            hasher.update(signature.encode())
+            return hasher.hexdigest()[:8]
+        except Exception:
+            pass
+
+        try:
+            digest = self._keccak256(signature.encode())
+            return digest.hex()[:8]
+        except Exception:
+            return None
+
+    def _is_dynamic_type(self, typ: str) -> bool:
+        if typ == "bytes" or typ == "string":
+            return True
+        if typ.endswith("[]"):
+            return True
+        if typ.startswith("tuple"):
+            return True
+        return False
+
+    def _keccak256(self, data: bytes) -> bytes:
+        """Pure-Python Keccak-256 (for environments without keccak bindings)."""
+        # Parameters for Keccak-256
+        rate_bits = 1088
+        rate_bytes = rate_bits // 8  # 136
+        capacity_bits = 512  # noqa: F841
+        output_bytes = 32
+
+        # Padding: pad10*1
+        padded = bytearray(data)
+        padded.append(0x01)
+        while (len(padded) % rate_bytes) != rate_bytes - 1:
+            padded.append(0x00)
+        padded.append(0x80)
+
+        state = [0] * 25  # 5x5 of 64-bit lanes
+
+        def _rot(x: int, n: int) -> int:
+            return ((x << n) | (x >> (64 - n))) & ((1 << 64) - 1)
+
+        # Round constants
+        RC = [
+            0x0000000000000001,
+            0x0000000000008082,
+            0x800000000000808A,
+            0x8000000080008000,
+            0x000000000000808B,
+            0x0000000080000001,
+            0x8000000080008081,
+            0x8000000000008009,
+            0x000000000000008A,
+            0x0000000000000088,
+            0x0000000080008009,
+            0x000000008000000A,
+            0x000000008000808B,
+            0x800000000000008B,
+            0x8000000000008089,
+            0x8000000000008003,
+            0x8000000000008002,
+            0x8000000000000080,
+            0x000000000000800A,
+            0x800000008000000A,
+            0x8000000080008081,
+            0x8000000000008080,
+            0x0000000080000001,
+            0x8000000080008008,
+        ]
+
+        # Rotation offsets
+        r = [
+            [0, 36, 3, 41, 18],
+            [1, 44, 10, 45, 2],
+            [62, 6, 43, 15, 61],
+            [28, 55, 25, 21, 56],
+            [27, 20, 39, 8, 14],
+        ]
+
+        def keccak_f():
+            nonlocal state
+            for rc in RC:
+                # Theta
+                C = [state[x] ^ state[x + 5] ^ state[x + 10] ^ state[x + 15] ^ state[x + 20] for x in range(5)]
+                D = [C[(x - 1) % 5] ^ _rot(C[(x + 1) % 5], 1) for x in range(5)]
+                state = [state[i] ^ D[i % 5] for i in range(25)]
+
+                # Rho and Pi
+                B = [0] * 25
+                for x in range(5):
+                    for y in range(5):
+                        B[y + ((2 * x + 3 * y) % 5) * 5] = _rot(state[x + 5 * y], r[x][y])
+
+                # Chi
+                for x in range(5):
+                    for y in range(5):
+                        state[x + 5 * y] = B[x + 5 * y] ^ ((~B[(x + 1) % 5 + 5 * y]) & B[(x + 2) % 5 + 5 * y])
+
+                # Iota
+                state[0] ^= rc
+
+        # Absorb
+        for offset in range(0, len(padded), rate_bytes):
+            block = padded[offset : offset + rate_bytes]
+            for i in range(0, rate_bytes, 8):
+                lane = int.from_bytes(block[i : i + 8], "little")
+                state[i // 8] ^= lane
+            keccak_f()
+
+        # Squeeze
+        out = bytearray()
+        while len(out) < output_bytes:
+            for i in range(rate_bytes // 8):
+                out.extend(state[i].to_bytes(8, "little"))
+            if len(out) >= output_bytes:
+                break
+            keccak_f()
+
+        return bytes(out[:output_bytes])
+
+    def _parse_function_signature(self, signature: str) -> Tuple[str, List[str]]:
+        text = signature.strip()
+        if "(" not in text or not text.endswith(")"):
+            raise ValueError("function must be in the form name(type1,type2,...)")
+        name, rest = text.split("(", 1)
+        fn = name.strip()
+        if not fn or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", fn):
+            raise ValueError("Invalid function name.")
+        params = rest[:-1]  # drop trailing ')'
+        types: List[str] = []
+        if params.strip():
+            depth = 0
+            buf = ""
+            for ch in params:
+                if ch == "," and depth == 0:
+                    types.append(buf.strip())
+                    buf = ""
+                    continue
+                if ch == "(":
+                    depth += 1
+                elif ch == ")":
+                    depth -= 1
+                buf += ch
+            if buf:
+                types.append(buf.strip())
+        for t in types:
+            if not t:
+                raise ValueError("Empty type in function signature.")
+        return fn, types
+
+    def _encode_abi_value(self, typ: str, value: Any) -> Tuple[bytes, bool]:
+        base_type, dimensions = self._split_array_dimensions(typ)
+        if dimensions:
+            return self._encode_array(base_type, dimensions, value)
+
+        if base_type == "address":
+            if not isinstance(value, str):
+                raise ValueError("address value must be a string.")
+            v = value.lower()
+            if v.startswith("0x"):
+                v = v[2:]
+            if len(v) != 40 or not re.fullmatch(r"[0-9a-fA-F]{40}", v):
+                raise ValueError("Invalid address value.")
+            return self._pad32(bytes.fromhex(v)), False
+
+        if base_type.startswith("uint"):
+            bits = 256
+            suffix = base_type[4:]
+            if suffix:
+                bits = int(suffix)
+            if bits <= 0 or bits > 256 or bits % 8 != 0:
+                raise ValueError(f"Unsupported uint size {bits}.")
+            if not isinstance(value, int):
+                raise ValueError("uint value must be an integer.")
+            if value < 0 or value >= 2**bits:
+                raise ValueError("uint value out of range.")
+            return value.to_bytes(32, "big"), False
+
+        if base_type.startswith("int"):
+            bits = 256
+            suffix = base_type[3:]
+            if suffix:
+                bits = int(suffix)
+            if bits <= 0 or bits > 256 or bits % 8 != 0:
+                raise ValueError(f"Unsupported int size {bits}.")
+            if not isinstance(value, int):
+                raise ValueError("int value must be an integer.")
+            min_val = -(2 ** (bits - 1))
+            max_val = 2 ** (bits - 1) - 1
+            if value < min_val or value > max_val:
+                raise ValueError("int value out of range.")
+            return int(value & (2**256 - 1)).to_bytes(32, "big"), False
+
+        if base_type == "bool":
+            if isinstance(value, bool):
+                iv = 1 if value else 0
+            elif isinstance(value, int):
+                if value not in (0, 1):
+                    raise ValueError("bool must be 0 or 1.")
+                iv = value
+            else:
+                raise ValueError("bool value must be bool or 0/1.")
+            return self._pad32(iv.to_bytes(32, "big")), False
+
+        if base_type == "bytes":
+            data_bytes = self._to_bytes(value, "bytes")
+            return self._encode_dynamic_bytes(data_bytes), True
+
+        if base_type == "string":
+            if not isinstance(value, str):
+                raise ValueError("string value must be a string.")
+            data_bytes = value.encode()
+            return self._encode_dynamic_bytes(data_bytes), True
+
+        if base_type.startswith("bytes"):
+            size_part = base_type[5:]
+            if not size_part.isdigit():
+                raise ValueError(f"Unsupported bytes type {base_type}.")
+            size = int(size_part)
+            if size <= 0 or size > 32:
+                raise ValueError("bytesN size must be between 1 and 32.")
+            data_bytes = self._to_bytes(value, base_type)
+            if len(data_bytes) != size:
+                raise ValueError(f"{base_type} requires {size} bytes.")
+            padded = data_bytes.ljust(32, b"\x00")
+            return padded, False
+
+        raise ValueError(f"Unsupported ABI type '{base_type}'.")
+
+    def _encode_array(self, base_type: str, dimensions: List[Optional[int]], value: Any) -> Tuple[bytes, bool]:
+        if not dimensions:
+            return self._encode_abi_value(base_type, value)
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("Array value must be a list or tuple.")
+
+        dim = dimensions[0]
+        remaining = dimensions[1:]
+        values = list(value)
+
+        if dim is None:
+            # dynamic array
+            length_bytes = self._pad32(len(values).to_bytes(32, "big"))
+            head_parts: List[bytes] = []
+            tail_parts: List[bytes] = []
+            offset = 32 * len(values)
+            for v in values:
+                enc, dynamic = self._encode_array(base_type, remaining, v)
+                if dynamic:
+                    head_parts.append(self._pad32(offset.to_bytes(32, "big")))
+                    tail_parts.append(enc)
+                    offset += len(enc)
+                else:
+                    head_parts.append(enc)
+            payload = b"".join([length_bytes] + head_parts + tail_parts)
+            return payload, True
+
+        # static array
+        if len(values) != dim:
+            raise ValueError(f"Expected array of length {dim}, got {len(values)}.")
+
+        element_encodings: List[Tuple[bytes, bool]] = [self._encode_array(base_type, remaining, v) for v in values]
+        if any(dynamic for _, dynamic in element_encodings):
+            # static array of dynamic elements -> overall dynamic
+            head_parts: List[bytes] = []
+            tail_parts: List[bytes] = []
+            offset = 32 * len(element_encodings)
+            for enc, dynamic in element_encodings:
+                if dynamic:
+                    head_parts.append(self._pad32(offset.to_bytes(32, "big")))
+                    tail_parts.append(enc)
+                    offset += len(enc)
+                else:
+                    head_parts.append(enc)
+            payload = b"".join(head_parts + tail_parts)
+            return payload, True
+
+        payload = b"".join(enc for enc, _ in element_encodings)
+        return payload, False
+
+    def _encode_dynamic_bytes(self, data: bytes) -> bytes:
+        length_bytes = self._pad32(len(data).to_bytes(32, "big"))
+        padded_data = data + b"\x00" * ((32 - (len(data) % 32)) % 32)
+        return length_bytes + padded_data
+
+    def _to_bytes(self, value: Any, field: str) -> bytes:
+        if isinstance(value, bytes):
+            return value
+        if isinstance(value, str):
+            v = value.strip().lower()
+            if v.startswith("0x"):
+                v = v[2:]
+            if len(v) % 2 != 0:
+                v = "0" + v
+            if not re.fullmatch(r"[0-9a-fA-F]*", v):
+                raise ValueError(f"{field} must be hex string or bytes.")
+            return bytes.fromhex(v)
+        raise ValueError(f"{field} must be hex string or bytes.")
+
+    def _split_array_dimensions(self, typ: str) -> Tuple[str, List[Optional[int]]]:
+        base = typ.strip()
+        dims: List[Optional[int]] = []
+        while base.endswith("]"):
+            lidx = base.rfind("[")
+            dim_str = base[lidx + 1 : -1]
+            if dim_str == "":
+                dims.insert(0, None)
+            else:
+                dims.insert(0, int(dim_str))
+            base = base[:lidx]
+        return base, dims
+
+    def _pad32(self, b: bytes) -> bytes:
+        if len(b) == 32:
+            return b
+        if len(b) > 32:
+            raise ValueError("Encoded value exceeds 32 bytes.")
+        return b.rjust(32, b"\x00")
 
     def _read_storage_word(self, address: str, slot: str, tag: str = "latest") -> str:
         payload = self.client.get_storage_at(address, slot, tag)

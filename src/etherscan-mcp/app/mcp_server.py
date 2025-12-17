@@ -3,7 +3,7 @@ MCP server exposing contract fetch capability via Etherscan V2.
 """
 
 import argparse
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 
 from mcp.server.fastmcp import FastMCP
 
@@ -138,12 +138,24 @@ def get_storage_at(
 )
 def call_function(
     address: str,
-    data: str,
+    data: Optional[str] = None,
     network: Optional[str] = None,
     block_tag: Optional[str] = None,
+    function: Optional[str] = None,
+    args: Optional[Sequence[Any]] = None,
 ) -> dict:
     svc = _get_service()
-    return svc.call_function(address, data, network, block_tag)
+    return svc.call_function(address, data, network, block_tag, function, list(args) if args is not None else None)
+
+
+@server.tool(
+    name="encode_function_data",
+    title="Encode Function Call",
+    description="Compute selector and ABI-encoded call data from function signature and arguments.",
+)
+def encode_function_data(function: str, args: Optional[Sequence[Any]] = None) -> dict:
+    svc = _get_service()
+    return svc.encode_function_data(function, list(args) if args is not None else None)
 
 
 def main() -> None:
