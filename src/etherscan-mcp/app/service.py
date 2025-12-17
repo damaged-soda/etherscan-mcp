@@ -1,6 +1,6 @@
 import json
 import re
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import hashlib
 
 from .cache import ContractCache
@@ -104,8 +104,8 @@ class ContractService:
         self,
         address: str,
         network: Optional[str] = None,
-        start_block: Optional[int] = None,
-        end_block: Optional[int] = None,
+        start_block: Optional[Union[int, str]] = None,
+        end_block: Optional[Union[int, str]] = None,
         page: Optional[int] = None,
         offset: Optional[int] = None,
         sort: Optional[str] = None,
@@ -182,8 +182,8 @@ class ContractService:
         address: str,
         network: Optional[str] = None,
         topics: Optional[Sequence[Optional[str]]] = None,
-        from_block: Optional[int] = None,
-        to_block: Optional[int] = None,
+        from_block: Optional[Union[int, str]] = None,
+        to_block: Optional[Union[int, str]] = None,
         page: Optional[int] = None,
         offset: Optional[int] = None,
     ) -> Dict[str, Any]:
@@ -584,12 +584,42 @@ class ContractService:
             detail = result
         raise ValueError(f"Etherscan error: {detail or message or 'unknown error'}.")
 
-    def _normalize_block_range(self, start: Optional[int], end: Optional[int]) -> Tuple[int, int]:
-        start_block = self._normalize_positive_int(start, 0, "start_block")
-        end_block = self._normalize_positive_int(end, MAX_BLOCK, "end_block")
+    def _normalize_block_range(
+        self, start: Optional[Union[int, str]], end: Optional[Union[int, str]]
+    ) -> Tuple[int, int]:
+        start_block = self._parse_block_number(start, 0, "start_block")
+        end_block = self._parse_block_number(end, MAX_BLOCK, "end_block")
         if start_block > end_block:
             raise ValueError("start_block cannot be greater than end_block.")
         return start_block, end_block
+
+    def _parse_block_number(
+        self, value: Optional[Union[int, str]], default: int, field: str
+    ) -> int:
+        if value is None:
+            return default
+        message = f"{field} must be a non-negative block number in decimal or 0x-prefixed hexadecimal."
+        if isinstance(value, bool):
+            raise ValueError(message)
+        if isinstance(value, (int, float)):
+            ivalue = int(value)
+        elif isinstance(value, str):
+            candidate = value.strip().lower()
+            if candidate.startswith("0x"):
+                try:
+                    ivalue = int(candidate, 16)
+                except ValueError as exc:
+                    raise ValueError(message) from exc
+            elif candidate.isdigit():
+                ivalue = int(candidate)
+            else:
+                raise ValueError(message)
+        else:
+            raise ValueError(message)
+
+        if ivalue < 0:
+            raise ValueError(message)
+        return ivalue
 
     def _normalize_positive_int(self, value: Optional[int], default: int, field: str) -> int:
         if value is None:

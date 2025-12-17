@@ -3,7 +3,7 @@ MCP server exposing contract fetch capability via Etherscan V2.
 """
 
 import argparse
-from typing import Any, Optional, Sequence
+from typing import Any, Optional, Sequence, Union
 
 from mcp.server.fastmcp import FastMCP
 
@@ -107,8 +107,8 @@ def query_logs(
     address: str,
     network: Optional[str] = None,
     topics: Optional[Sequence[Optional[str]]] = None,
-    from_block: Optional[int] = None,
-    to_block: Optional[int] = None,
+    from_block: Optional[Union[int, str]] = None,
+    to_block: Optional[Union[int, str]] = None,
     page: Optional[int] = None,
     offset: Optional[int] = None,
 ) -> dict:
