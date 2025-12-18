@@ -236,6 +236,28 @@ class ContractService:
             "block_tag": tag,
         }
 
+    def get_transaction(self, tx_hash: str, network: Optional[str] = None) -> Dict[str, Any]:
+        network_label, chain_id = self._resolve_network_and_chain(network)
+        self.client.chain_id = chain_id
+        normalized_hash = self._normalize_tx_hash(tx_hash)
+
+        tx_payload = self.client.get_transaction(normalized_hash)
+        tx_result = self._extract_proxy_result(tx_payload, allow_none=True)
+
+        receipt_payload = self.client.get_transaction_receipt(normalized_hash)
+        receipt_result = self._extract_proxy_result(receipt_payload, allow_none=True)
+
+        tx_obj = self._map_transaction_detail(tx_result) if tx_result else None
+        receipt_obj = self._map_receipt(receipt_result) if receipt_result else None
+
+        return {
+            "tx_hash": normalized_hash,
+            "network": network_label,
+            "chain_id": chain_id,
+            "transaction": tx_obj,
+            "receipt": receipt_obj,
+        }
+
     def call_function(
         self,
         address: str,
@@ -1201,12 +1223,16 @@ class ContractService:
             detail = result[0] if isinstance(result[0], str) else ""
         raise ValueError(f"Etherscan error: {detail or message or 'unknown error'}.")
 
-    def _extract_proxy_result(self, payload: Dict[str, Any]) -> str:
+    def _extract_proxy_result(self, payload: Dict[str, Any], allow_none: bool = False) -> Any:
         if not isinstance(payload, dict):
             raise ValueError("Unexpected response from Etherscan.")
 
-        if "result" in payload and isinstance(payload.get("result"), str):
-            return payload["result"]
+        if "result" in payload:
+            res = payload.get("result")
+            if res is None and allow_none:
+                return None
+            if isinstance(res, (str, dict, list)):
+                return res
 
         # JSON-RPC style error object from Etherscan proxy endpoints
         error_obj = payload.get("error")
@@ -1227,8 +1253,10 @@ class ContractService:
         status = str(payload.get("status", "")).strip()
         message = payload.get("message", "")
         result = payload.get("result")
-        if status == "1" and isinstance(result, str):
+        if status == "1":
             return result
+        if allow_none and result is None:
+            return None
 
         detail = ""
         if isinstance(result, str):
@@ -1310,6 +1338,17 @@ class ContractService:
 
     def _normalize_slot(self, slot: str) -> str:
         return self._normalize_hex_string(slot, "slot", pad_to=64)
+
+    def _normalize_tx_hash(self, tx_hash: str) -> str:
+        if not isinstance(tx_hash, str):
+            raise ValueError("tx_hash must be a string.")
+        candidate = tx_hash.strip().lower()
+        if not candidate.startswith("0x"):
+            candidate = f"0x{candidate}"
+        body = candidate[2:]
+        if len(body) != 64 or not re.fullmatch(r"[0-9a-f]{64}", body):
+            raise ValueError("tx_hash must be 0x-prefixed 64 hex characters.")
+        return candidate
 
     def _normalize_block_tag(self, tag: Optional[str]) -> str:
         if tag is None:
@@ -1720,6 +1759,61 @@ class ContractService:
             "timestamp": tx.get("timeStamp"),
             "input": tx.get("input"),
         }
+
+    def _map_transaction_detail(self, tx: Dict[str, Any]) -> Dict[str, Any]:
+        def hx(field: str) -> Optional[int]:
+            return self._hex_to_int(tx.get(field), field)
+
+        return {
+            "hash": tx.get("hash"),
+            "from": tx.get("from"),
+            "to": tx.get("to"),
+            "nonce": hx("nonce"),
+            "value": tx.get("value"),
+            "value_int": hx("value"),
+            "gas": hx("gas"),
+            "gas_price": hx("gasPrice"),
+            "max_fee_per_gas": hx("maxFeePerGas"),
+            "max_priority_fee_per_gas": hx("maxPriorityFeePerGas"),
+            "block_hash": tx.get("blockHash"),
+            "block_number": hx("blockNumber"),
+            "transaction_index": hx("transactionIndex"),
+            "type": hx("type"),
+            "input": tx.get("input"),
+            "chain_id": hx("chainId"),
+            "v": tx.get("v"),
+            "r": tx.get("r"),
+            "s": tx.get("s"),
+        }
+
+    def _map_receipt(self, receipt: Dict[str, Any]) -> Dict[str, Any]:
+        def hx(field: str) -> Optional[int]:
+            return self._hex_to_int(receipt.get(field), field)
+
+        return {
+            "status": hx("status"),
+            "contract_address": receipt.get("contractAddress"),
+            "cumulative_gas_used": hx("cumulativeGasUsed"),
+            "gas_used": hx("gasUsed"),
+            "effective_gas_price": hx("effectiveGasPrice"),
+            "block_hash": receipt.get("blockHash"),
+            "block_number": hx("blockNumber"),
+            "transaction_hash": receipt.get("transactionHash"),
+            "transaction_index": hx("transactionIndex"),
+            "logs": receipt.get("logs"),
+        }
+
+    def _hex_to_int(self, value: Any, field: str) -> Optional[int]:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return None
+        try:
+            if value.startswith("0x") or value.startswith("0X"):
+                return int(value, 16)
+            return int(value, 16)
+        except Exception:
+            raise ValueError(f"{field} is not a valid hex value.")
 
     def _map_token_transfer(self, transfer: Dict[str, Any], token_type: str) -> Dict[str, Any]:
         base = {

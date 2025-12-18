@@ -119,6 +119,24 @@ class EtherscanClient:
         params.update(topics)
         return self._request(params)
 
+    def get_transaction(self, tx_hash: str) -> Dict[str, Any]:
+        params = {
+            "module": "proxy",
+            "action": "eth_getTransactionByHash",
+            "txhash": tx_hash,
+            "chainid": self.chain_id,
+        }
+        return self._request(params)
+
+    def get_transaction_receipt(self, tx_hash: str) -> Dict[str, Any]:
+        params = {
+            "module": "proxy",
+            "action": "eth_getTransactionReceipt",
+            "txhash": tx_hash,
+            "chainid": self.chain_id,
+        }
+        return self._request(params)
+
     def get_storage_at(self, address: str, slot: str, tag: str) -> Dict[str, Any]:
         params = {
             "module": "proxy",

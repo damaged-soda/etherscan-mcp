@@ -193,6 +193,16 @@ def keccak(value: Any, input_type: Optional[str] = None) -> dict:
 
 
 @server.tool(
+    name="get_transaction",
+    title="Get Transaction Detail",
+    description="Fetch a single transaction (and receipt) by tx hash.",
+)
+def get_transaction(tx_hash: str, network: Optional[str] = None) -> dict:
+    svc = _get_service()
+    return svc.get_transaction(tx_hash, network)
+
+
+@server.tool(
     name="convert",
     title="Chain Number Convert",
     description="Convert hex/dec/human/wei/gwei/eth with decimals (default 18). Use convert(value, from, to, decimals?). Returns JSON with original, converted, explain.",
