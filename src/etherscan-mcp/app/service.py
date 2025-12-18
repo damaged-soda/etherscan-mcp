@@ -651,15 +651,8 @@ class ContractService:
 
         # If we have ABI info but selector not found:
         if available_selectors:
-            # If proxy and no implementation ABI, allow call to proceed (avoid blocking proxies with missing impl ABI)
-            if proxy_info and proxy_info.get("is_proxy") and not any(
-                src == "implementation" for _, src in selector_maps
-            ):
-                return normalized, func_meta
-            available = ", ".join(sorted(set(available_selectors)))
-            raise ValueError(
-                f"Function selector 0x{selector} not found in cached ABI. Known selectors: {available or 'none'}."
-            )
+            # Soft fail: allow raw call but record warning for decoded/error
+            func_meta["warning"] = f"Function selector 0x{selector} not found in cached ABI; returning raw result."
 
         return normalized, func_meta
 
@@ -672,6 +665,7 @@ class ContractService:
             "function_signature": func_meta.get("signature"),
             "source": func_meta.get("source"),
             "outputs": [],
+            "warning": func_meta.get("warning"),
         }
 
         if not isinstance(result_hex, str):
@@ -681,7 +675,7 @@ class ContractService:
         raw_hex = result_hex if result_hex.startswith("0x") else f"0x{result_hex}"
         entry = func_meta.get("entry")
         if not isinstance(entry, dict):
-            decoded["error"] = "ABI not available for decoding."
+            decoded["error"] = decoded["error"] or "ABI not available for decoding."
             return decoded
 
         outputs = entry.get("outputs", [])

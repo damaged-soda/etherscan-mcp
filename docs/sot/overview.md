@@ -31,6 +31,7 @@ Etherscan MCP：单仓 Python 项目。用户提供 `ETHERSCAN_API_KEY`，通过
       - `encode_function_data(function, args?)`：纯本地计算 4byte selector 与 ABI 编码 data，便于构造调用；`args` 必须为数组。  
       - `convert(value, from, to, decimals?)`：链上数字轻量转换；from/to 支持 hex/dec/human/wei/gwei/eth，decimals 默认 18；支持 hex↔dec、整数↔人类可读金额（含千分位与科学计数字段）、wei/gwei/eth 互转，返回 JSON（original/converted/decimals/explain）。  
       - `keccak(value, input_type?)`：keccak-256（非 sha3-256）；input_type: text|hex|bytes，支持单值或 list/tuple（按顺序拼接为 bytes 后哈希），文本按 UTF-8。返回 0x 前缀 hex。  
+      - call_function 在 ABI 已加载但缺少 selector 时改为放行 raw eth_call，返回原始 hex，decoded 中保留 error/warning；无 ABI 时同样放行 raw。  
     - 参数形态提醒：`call_function.args`、`encode_function_data.args`、`query_logs.topics` 必须是数组；传入字符串/对象会报错，标量会自动包成单元素数组。  
     - 代理感知：call_function 使用 EIP-1967 槽与 Etherscan Proxy/Implementation 元数据优先加载实现 ABI 进行 selector 校验与解码；探测异常不会缓存“非代理”结果，避免假阴性。  
     无需手动常驻进程，Codex 按需启动。  
