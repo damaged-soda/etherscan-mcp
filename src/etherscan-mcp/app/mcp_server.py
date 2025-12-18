@@ -49,14 +49,19 @@ def _normalize_array_param(value: Optional[Any], name: str) -> Optional[list]:
 @server.tool(
     name="fetch_contract",
     title="Fetch Contract Details",
-    description="Fetch verified contract ABI and source code from Etherscan.",
+    description="Fetch verified contract ABI and source code from Etherscan. Use inline_limit/force_inline to control inlined source size.",
 )
-def fetch_contract(address: str, network: Optional[str] = None) -> dict:
+def fetch_contract(
+    address: str,
+    network: Optional[str] = None,
+    inline_limit: Optional[int] = None,
+    force_inline: bool = False,
+) -> dict:
     """
     Fetch contract details for a given address.
     """
     svc = _get_service()
-    return svc.fetch_contract(address, network)
+    return svc.fetch_contract(address, network, inline_limit, force_inline)
 
 
 @server.tool(
@@ -180,6 +185,22 @@ def encode_function_data(function: str, args: Optional[Any] = None) -> dict:
     svc = _get_service()
     normalized_args = _normalize_array_param(args, "args")
     return svc.encode_function_data(function, normalized_args)
+
+
+@server.tool(
+    name="get_source_file",
+    title="Get Single Source File",
+    description="Fetch a specific source file for a verified contract. Supports optional offset/length for chunked reads.",
+)
+def get_source_file(
+    address: str,
+    filename: str,
+    network: Optional[str] = None,
+    offset: Optional[int] = None,
+    length: Optional[int] = None,
+) -> dict:
+    svc = _get_service()
+    return svc.get_source_file(address, filename, network, offset, length)
 
 
 @server.tool(

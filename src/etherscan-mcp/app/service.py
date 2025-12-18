@@ -1,3 +1,4 @@
+import copy
 import json
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
@@ -14,6 +15,7 @@ EIP1967_ADMIN_SLOT = "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a71785
 MAX_BLOCK = 99999999
 DEFAULT_PAGE = 1
 DEFAULT_OFFSET = 100
+DEFAULT_INLINE_SOURCE_LIMIT = 20000
 
 # Increase precision for Decimal-based formatting
 getcontext().prec = 100
@@ -36,20 +38,76 @@ class ContractService:
             backoff_seconds=config.backoff_seconds,
         )
 
-    def fetch_contract(self, address: str, network: Optional[str] = None) -> Dict[str, Any]:
+    def fetch_contract(
+        self,
+        address: str,
+        network: Optional[str] = None,
+        inline_limit: Optional[int] = None,
+        force_inline: bool = False,
+    ) -> Dict[str, Any]:
         normalized_address, network_label, chain_id = self._prepare_context(address, network)
 
-        cached = self.cache.get(normalized_address, chain_id)
-        if cached:
-            return cached
+        limit = self._normalize_inline_limit(inline_limit)
+        contract = self._get_full_contract(normalized_address, network_label, chain_id)
+        return self._apply_inline_policy(contract, limit, force_inline)
 
-        payload = self.client.get_contract_source(normalized_address)
-        parsed = self._parse_contract_response(payload, normalized_address, network_label, chain_id)
-        self.cache.set(normalized_address, chain_id, parsed)
-        proxy_info = self._proxy_info_from_contract(parsed)
-        if proxy_info:
-            self.proxy_cache.set(normalized_address, chain_id, proxy_info)
-        return parsed
+    def get_source_file(
+        self,
+        address: str,
+        filename: str,
+        network: Optional[str] = None,
+        offset: Optional[int] = None,
+        length: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        normalized_address, network_label, chain_id = self._prepare_context(address, network)
+
+        if not isinstance(filename, str) or not filename.strip():
+            raise ValueError("filename must be a non-empty string.")
+        target_name = filename.strip()
+        slice_offset = self._normalize_positive_int(offset, 0, "offset")
+        slice_length = self._normalize_optional_positive_int(length, "length")
+
+        contract = self._get_full_contract(normalized_address, network_label, chain_id)
+        source_files = contract.get("source_files") or []
+
+        match = None
+        for entry in source_files:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("filename") == target_name:
+                match = entry
+                break
+
+        if match is None:
+            raise ValueError(f"filename '{target_name}' not found for contract {normalized_address}.")
+
+        content = match.get("content", "")
+        if not isinstance(content, str):
+            content = str(content)
+        total_length = len(content)
+        if slice_offset > total_length:
+            raise ValueError("offset exceeds file length.")
+
+        if slice_length is None:
+            end = total_length
+        else:
+            end = min(total_length, slice_offset + slice_length)
+
+        chunk = content[slice_offset:end]
+        sha256_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+        return {
+            "address": normalized_address,
+            "network": network_label,
+            "chain_id": chain_id,
+            "filename": target_name,
+            "offset": slice_offset,
+            "returned_length": len(chunk),
+            "total_length": total_length,
+            "sha256": sha256_hash,
+            "content": chunk,
+            "truncated": end < total_length,
+        }
 
     def get_contract_creation(self, address: str, network: Optional[str] = None) -> Dict[str, Any]:
         normalized_address, network_label, chain_id = self._prepare_context(address, network)
@@ -1316,6 +1374,11 @@ class ContractService:
             raise ValueError(f"{field} must be a non-negative integer.")
         return ivalue
 
+    def _normalize_optional_positive_int(self, value: Optional[int], field: str) -> Optional[int]:
+        if value is None:
+            return None
+        return self._normalize_positive_int(value, 0, field)
+
     def _normalize_sort(self, sort: Optional[str]) -> str:
         if sort is None:
             return "asc"
@@ -1323,6 +1386,99 @@ class ContractService:
         if normalized not in {"asc", "desc"}:
             raise ValueError("sort must be 'asc' or 'desc'.")
         return normalized
+
+    def _normalize_inline_limit(self, inline_limit: Optional[int]) -> int:
+        if inline_limit is None:
+            return DEFAULT_INLINE_SOURCE_LIMIT
+        if isinstance(inline_limit, bool):
+            raise ValueError("inline_limit must be a non-negative integer.")
+        if isinstance(inline_limit, (int, float)):
+            limit = int(inline_limit)
+        elif isinstance(inline_limit, str) and inline_limit.strip().isdigit():
+            limit = int(inline_limit.strip())
+        else:
+            raise ValueError("inline_limit must be a non-negative integer.")
+        if limit < 0:
+            raise ValueError("inline_limit must be a non-negative integer.")
+        return limit
+
+    def _get_full_contract(self, address: str, network: str, chain_id: str) -> Dict[str, Any]:
+        cached = self.cache.get(address, chain_id)
+        if cached:
+            return cached
+
+        payload = self.client.get_contract_source(address)
+        parsed = self._parse_contract_response(payload, address, network, chain_id)
+        self.cache.set(address, chain_id, parsed)
+        proxy_info = self._proxy_info_from_contract(parsed)
+        if proxy_info:
+            self.proxy_cache.set(address, chain_id, proxy_info)
+        return parsed
+
+    def _apply_inline_policy(
+        self, contract: Dict[str, Any], inline_limit: int, force_inline: bool
+    ) -> Dict[str, Any]:
+        if not isinstance(contract, dict):
+            raise ValueError("Unexpected contract payload.")
+
+        source_files = contract.get("source_files") or []
+        total_length = 0
+        normalized_files: List[Dict[str, Any]] = []
+        for entry in source_files:
+            if not isinstance(entry, dict):
+                continue
+            content = entry.get("content", "")
+            if not isinstance(content, str):
+                content = str(content)
+            total_length += len(content)
+            normalized_files.append(
+                {
+                    "filename": entry.get("filename", "Contract.sol"),
+                    "content": content,
+                }
+            )
+
+        include_content = force_inline or total_length <= inline_limit
+        source_omitted = not include_content and bool(normalized_files)
+        omitted_reason = None
+        response_files: List[Dict[str, Any]] = []
+
+        if source_omitted:
+            omitted_reason = (
+                f"Total source size {total_length} exceeded inline_limit {inline_limit}; "
+                "use get_source_file to fetch content."
+            )
+
+        for entry in normalized_files:
+            content = entry.get("content", "")
+            filename = entry.get("filename", "Contract.sol")
+            length = len(content)
+            sha256_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            if include_content:
+                response_files.append(
+                    {
+                        "filename": filename,
+                        "content": content,
+                        "length": length,
+                        "sha256": sha256_hash,
+                        "inline": True,
+                    }
+                )
+            else:
+                response_files.append(
+                    {
+                        "filename": filename,
+                        "length": length,
+                        "sha256": sha256_hash,
+                        "inline": False,
+                    }
+                )
+
+        response = copy.copy(contract)
+        response["source_files"] = response_files
+        response["source_omitted"] = source_omitted
+        response["source_omitted_reason"] = omitted_reason
+        return response
 
     def _normalize_topics(self, topics: Optional[Sequence[Optional[str]]]) -> Dict[str, str]:
         if not topics:
