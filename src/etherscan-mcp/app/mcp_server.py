@@ -185,11 +185,21 @@ def encode_function_data(function: str, args: Optional[Any] = None) -> dict:
 @server.tool(
     name="keccak",
     title="Keccak-256 Hash",
-    description="Compute keccak-256 hash. input_type: text|hex|bytes (default text, UTF-8). Returns 0x-prefixed hex.",
+    description="Compute keccak-256 hash. input_type: text|hex|bytes (default text, UTF-8). Supports single value or list/tuple (elements concatenated). Returns 0x-prefixed hex.",
 )
 def keccak(value: Any, input_type: Optional[str] = None) -> dict:
     svc = _get_service()
     return svc.keccak(value, input_type)
+
+
+@server.tool(
+    name="convert",
+    title="Chain Number Convert",
+    description="Convert hex/dec/human/wei/gwei/eth with decimals (default 18). Use convert(value, from, to, decimals?). Returns JSON with original, converted, explain.",
+)
+def convert(value: Any, from_unit: str, to_unit: str, decimals: Optional[Any] = None) -> dict:
+    svc = _get_service()
+    return svc.convert(value, from_unit, to_unit, decimals)
 
 
 def main() -> None:

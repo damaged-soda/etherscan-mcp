@@ -10,9 +10,10 @@ Last Updated: 2025-12-18
 - service：聚合合约详情与调研能力，统一地址格式校验和 network/chainid 解析；解析 Etherscan 响应（包含多文件 SourceCode JSON）；新增能力：创建信息（可缓存）、代理检测（EIP-1967 implementation/admin 槽）、交易列表、代币转移列表（ERC20/721/1155）、日志查询、存储槽读取、eth_call 只读调用；动态接口对空结果返回空列表，对错误返回可读 ValueError。
   - 块号输入兼容：块范围相关字段（start_block/end_block/from_block/to_block）接受整数、十进制字符串或 `0x` 十六进制字符串，统一解析为整数；非法输入报错提示“十进制或 0x 前缀”。
   - proxy/eth_call/eth_getStorageAt 错误处理：若 Etherscan 返回 JSON-RPC error 对象，透出其中的 code/message/data，避免“unknown error”。
-- call_function 输入校验与编码：基础检查 0x/偶数字节/至少 4 字节 selector；若 ContractCache/即时获取到 ABI，则校验 selector 并按静态参数校验最小长度；未命中自动 detect_proxy，识别 EIP-1967 代理后尝试实现 ABI，缺失实现 ABI 时不阻塞；支持 function+args 本地 ABI 编码（内置 Keccak-256/4byte）。
-- call_function 返回解码：有 ABI 时按 outputs 解码（含 tuple/数组），多返回值展开并返回 decoded（ok/error、函数信息、输出列表）；数值类支持可选 decimals hint 计算 value_scaled；原始返回 hex 保留在 data；无 ABI 或解码失败时 decoded 标注 error 但调用不抛异常。
-- entry：CLI 入口 `python -m app.cli fetch --address ... [--network ...]`，输出 JSON；MCP 入口 `python -m app.mcp_server --transport stdio|sse|streamable-http`，提供工具 `fetch_contract`、`get_contract_creation`、`detect_proxy`、`list_transactions`、`list_token_transfers`、`query_logs`、`get_storage_at`、`call_function`。
+  - call_function 输入校验与编码：基础检查 0x/偶数字节/至少 4 字节 selector；若 ContractCache/即时获取到 ABI，则校验 selector 并按静态参数校验最小长度；未命中自动 detect_proxy，识别 EIP-1967 代理后尝试实现 ABI，缺失实现 ABI 时不阻塞；支持 function+args 本地 ABI 编码（内置 Keccak-256/4byte）。
+  - call_function 返回解码：有 ABI 时按 outputs 解码（含 tuple/数组），多返回值展开并返回 decoded（ok/error、函数信息、输出列表）；数值类支持可选 decimals hint 计算 value_scaled；原始返回 hex 保留在 data；无 ABI 或解码失败时 decoded 标注 error 但调用不抛异常。
+  - convert：from/to 支持 hex/dec/human/wei/gwei/eth，decimals 默认 18；hex/dec 互转自动去 0x；human 与整数按 decimals 放缩，提供 plain/thousands/scientific；wei/gwei/eth 按 1e0/1e9/1e18 缩放；非法 hex、分数精度超限等给出可读错误；内部使用整数/Decimal 避免浮点精度丢失。
+- entry：CLI 入口 `python -m app.cli fetch --address ... [--network ...]`，输出 JSON；MCP 入口 `python -m app.mcp_server --transport stdio|sse|streamable-http`，提供工具 `fetch_contract`、`get_contract_creation`、`detect_proxy`、`list_transactions`、`list_token_transfers`、`query_logs`、`get_storage_at`、`call_function`、`keccak`（keccak-256，支持 text|hex|bytes 的单值或 list/tuple，列表按顺序拼接为 bytes，文本 UTF-8）、`convert`（hex/dec/human/wei/gwei/eth 互转，decimals 默认 18，返回 original/converted/decimals/explain，human 输出含千分位和科学计数字段）。
 - mcp_server 参数形态约束：对需要数组的参数（`call_function.args`、`encode_function_data.args`、`query_logs.topics`）在入口层做形态规范：list/tuple 保持，标量自动包成单元素数组，字符串/bytes 或对象直接报错并提示示例，避免被逐字符拆分。
 - tests/fixtures：暂未实现。
 - 代理感知与缓存：fetch_contract 解析 Etherscan Proxy/Implementation 元数据，规范化实现地址并写入 proxy cache；call_function 的 ABI 选择优先使用实现合约（来自 getsourcecode 元数据或 EIP-1967 detect_proxy），探测异常不缓存“非代理”，避免假阴性；缺失实现 ABI 时调用不阻断，仅解码受限。

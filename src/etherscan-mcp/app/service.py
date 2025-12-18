@@ -1,7 +1,7 @@
-import json
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import hashlib
+from decimal import Decimal, getcontext
 
 from .cache import ContractCache
 from .config import Config, resolve_chain_id
@@ -13,6 +13,9 @@ EIP1967_ADMIN_SLOT = "0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a71785
 MAX_BLOCK = 99999999
 DEFAULT_PAGE = 1
 DEFAULT_OFFSET = 100
+
+# Increase precision for Decimal-based formatting
+getcontext().prec = 100
 
 
 class ContractService:
@@ -271,28 +274,205 @@ class ContractService:
         selector, data = self._encode_function_call(function, args or [])
         return {"function": function, "selector": selector, "data": data}
 
+    def convert(
+        self,
+        value: Any,
+        from_unit: str,
+        to_unit: str,
+        decimals: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """
+        Convert between hex/dec/human/wei/gwei/eth with optional decimals (default 18).
+        Returns JSON with original/converted/explain.
+        """
+        from_norm = (from_unit or "").lower()
+        to_norm = (to_unit or "").lower()
+        allowed = {"hex", "dec", "human", "wei", "gwei", "eth"}
+        if from_norm not in allowed or to_norm not in allowed:
+            raise ValueError("from/to must be one of: hex, dec, human, wei, gwei, eth.")
+
+        decimals_val = self._parse_decimals_int(decimals, default=18)
+        base_int = self._convert_to_int(value, from_norm, decimals_val)
+        converted = self._convert_from_int(base_int, to_norm, decimals_val)
+
+        explain = self._build_explain(value, from_norm, to_norm, decimals_val, base_int, converted)
+
+        resp: Dict[str, Any] = {
+            "original": {"value": self._stringify(value, from_norm), "unit": from_norm},
+            "converted": {"value": converted["value"], "unit": to_norm},
+            "from": from_norm,
+            "to": to_norm,
+            "decimals": decimals_val,
+            "explain": explain,
+        }
+        if "thousands" in converted:
+            resp["converted"]["thousands"] = converted["thousands"]
+        if "scientific" in converted:
+            resp["converted"]["scientific"] = converted["scientific"]
+        return resp
+
+    def _stringify(self, value: Any, unit: str) -> str:
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (int, float)):
+            return str(value)
+        return str(value)
+
+    def _convert_to_int(self, value: Any, unit: str, decimals: int) -> int:
+        if unit == "hex":
+            if not isinstance(value, str):
+                raise ValueError("For from=hex, value must be a hex string.")
+            normalized = self._normalize_hex_string(value, "value")
+            return int(normalized, 16)
+        if unit == "dec":
+            return self._parse_integer_string(str(value), "value")
+        if unit in {"wei", "gwei", "eth"}:
+            scale = 18 if unit == "eth" else 9 if unit == "gwei" else 0
+            return self._decimal_to_int(str(value), scale, unit, allow_fraction=True)
+        if unit == "human":
+            return self._decimal_to_int(str(value), decimals, "human", allow_fraction=True)
+        raise ValueError("Unsupported from unit.")
+
+    def _convert_from_int(self, value: int, unit: str, decimals: int) -> Dict[str, str]:
+        if unit == "hex":
+            if value < 0:
+                return {"value": "-" + hex(-value)[2:]}
+            return {"value": hex(value)[2:]}
+        if unit == "dec":
+            return {"value": str(value)}
+        if unit in {"wei", "gwei", "eth"}:
+            scale = 18 if unit == "eth" else 9 if unit == "gwei" else 0
+            if scale == 0:
+                return {"value": str(value)}
+            return {"value": self._format_scaled_int(value, scale)}
+        if unit == "human":
+            plain = self._format_scaled_int(value, decimals)
+            return {
+                "value": plain,
+                "thousands": self._format_thousands(plain),
+                "scientific": self._format_scientific_int(value, decimals),
+            }
+        raise ValueError("Unsupported to unit.")
+
+    def _format_thousands(self, text: str) -> str:
+        negative = text.startswith("-")
+        body = text[1:] if negative else text
+        if "." in body:
+            whole, frac = body.split(".", 1)
+            formatted = f"{int(whole or 0):,}.{frac}"
+        else:
+            formatted = f"{int(body or 0):,}"
+        return f"-{formatted}" if negative else formatted
+
+    def _format_scientific_int(self, value: int, decimals: int) -> str:
+        dec_value = Decimal(value) / (Decimal(10) ** decimals)
+        return format(dec_value, ".6E")
+
+    def _decimal_to_int(self, text: str, scale: int, field: str, allow_fraction: bool) -> int:
+        candidate = text.strip().replace("_", "")
+        if not candidate:
+            raise ValueError(f"{field} must be a decimal number.")
+        negative = candidate.startswith("-")
+        if candidate[0] in "+-":
+            candidate = candidate[1:]
+        if not candidate:
+            raise ValueError(f"{field} must be a decimal number.")
+        if "." in candidate:
+            whole, frac = candidate.split(".", 1)
+        else:
+            whole, frac = candidate, ""
+        if not whole.isdigit() or (frac and not frac.isdigit()):
+            raise ValueError(f"{field} must be a decimal number.")
+        if not allow_fraction and frac:
+            raise ValueError(f"{field} must be an integer.")
+        if len(frac) > scale:
+            raise ValueError(f"{field} has more fractional digits than allowed ({scale}).")
+        whole_int = int(whole) if whole else 0
+        frac_int = int(frac.ljust(scale, "0")) if frac else 0
+        scaled = whole_int * (10**scale) + frac_int
+        return -scaled if negative else scaled
+
+    def _parse_integer_string(self, text: str, field: str) -> int:
+        candidate = text.strip().replace("_", "")
+        if not re.fullmatch(r"[+-]?\d+", candidate):
+            raise ValueError(f"For {field}, value must be an integer.")
+        try:
+            return int(candidate, 10)
+        except Exception:
+            raise ValueError(f"For {field}, value must be an integer.")
+
+    def _parse_decimals_int(self, decimals: Any, default: int = 18) -> int:
+        if decimals is None:
+            return default
+        if isinstance(decimals, bool):
+            raise ValueError("decimals must be a non-negative integer.")
+        if isinstance(decimals, (int, float)):
+            ivalue = int(decimals)
+        elif isinstance(decimals, str):
+            stripped = decimals.strip()
+            if not stripped.lstrip("+-").isdigit():
+                raise ValueError("decimals must be a non-negative integer.")
+            ivalue = int(stripped)
+        else:
+            raise ValueError("decimals must be a non-negative integer.")
+        if ivalue < 0:
+            raise ValueError("decimals must be a non-negative integer.")
+        return ivalue
+
+    def _build_explain(
+        self,
+        original: Any,
+        from_unit: str,
+        to_unit: str,
+        decimals: int,
+        base_int: int,
+        converted: Dict[str, Any],
+    ) -> str:
+        parts = [f"{from_unit} -> {to_unit}", f"value={self._stringify(original, from_unit)}"]
+        if from_unit in {"human", "dec"} or to_unit == "human":
+            parts.append(f"decimals={decimals}")
+        parts.append(f"base_int={base_int}")
+        parts.append(f"result={converted.get('value')}")
+        return " | ".join(parts)
+
     def keccak(self, value: Any, input_type: Optional[str] = None) -> Dict[str, str]:
-        """Compute keccak-256; input_type: text|hex|bytes (default text, UTF-8)."""
+        """Compute keccak-256; input_type: text|hex|bytes (default text, UTF-8). Supports list/tuple by concatenating elements in order."""
         normalized_type = (input_type or "text").lower()
         if normalized_type not in {"text", "hex", "bytes"}:
             raise ValueError("input_type must be one of: text, hex, bytes.")
 
-        if normalized_type == "text":
-            if not isinstance(value, str):
-                raise ValueError("For input_type=text, value must be a string.")
-            data = value.encode("utf-8")
-        elif normalized_type == "hex":
-            if not isinstance(value, str):
-                raise ValueError("For input_type=hex, value must be a hex string.")
-            normalized = self._normalize_hex_string(value, "value")
-            data = self._hex_to_bytes(normalized)
-        else:  # bytes
-            if isinstance(value, (bytes, bytearray)):
-                data = bytes(value)
-            elif isinstance(value, str):
-                data = value.encode("utf-8")
-            else:
-                raise ValueError("For input_type=bytes, value must be bytes-like or string.")
+        is_sequence = isinstance(value, (list, tuple))
+        items = value if is_sequence else [value]
+        parts: List[bytes] = []
+
+        for idx, item in enumerate(items):
+            prefix = f"value[{idx}]" if is_sequence else "value"
+            if normalized_type == "text":
+                if not isinstance(item, str):
+                    raise ValueError(f"For input_type=text, {prefix} must be a string.")
+                part = item.encode("utf-8")
+            elif normalized_type == "hex":
+                if not isinstance(item, str):
+                    raise ValueError(f"For input_type=hex, {prefix} must be a hex string.")
+                normalized = self._normalize_hex_string(item, prefix)
+                hex_body = normalized[2:]
+                if len(hex_body) % 2 != 0:
+                    raise ValueError(
+                        f"For input_type=hex, {prefix} length must be even (for bytes32[] use 64 hex chars = 32 bytes)."
+                    )
+                part = self._hex_to_bytes(normalized)
+            else:  # bytes
+                if isinstance(item, (bytes, bytearray)):
+                    part = bytes(item)
+                elif isinstance(item, str):
+                    part = item.encode("utf-8")
+                else:
+                    raise ValueError(
+                        f"For input_type=bytes, {prefix} must be bytes-like or string."
+                    )
+            parts.append(part)
+
+        data = b"".join(parts)
 
         digest = self._keccak256(data)
         return {"input_type": normalized_type, "data": "0x" + digest.hex()}
