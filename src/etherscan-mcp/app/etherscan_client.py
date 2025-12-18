@@ -137,6 +137,16 @@ class EtherscanClient:
         }
         return self._request(params)
 
+    def get_block_by_number(self, tag: str, full_transactions: bool) -> Dict[str, Any]:
+        params = {
+            "module": "proxy",
+            "action": "eth_getBlockByNumber",
+            "tag": tag,
+            "boolean": str(full_transactions).lower(),
+            "chainid": self.chain_id,
+        }
+        return self._request(params)
+
     def get_storage_at(self, address: str, slot: str, tag: str) -> Dict[str, Any]:
         params = {
             "module": "proxy",

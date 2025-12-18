@@ -1,9 +1,9 @@
 # 项目概览（SOT）
 
-Last Updated: 2025-12-18
+Last Updated: 2025-12-19
 
 ## 项目是什么
- Etherscan MCP：单仓 Python 项目。用户提供 `ETHERSCAN_API_KEY`，通过 CLI/MCP 拉取并缓存 Etherscan 上已验证合约的 ABI、源码和基本元数据，辅助离线分析，不涉及部署或链上写操作。已落地最小可运行骨架（配置、客户端、缓存、服务、CLI），默认使用 Etherscan API V2。
+Etherscan MCP：单仓 Python 项目。用户提供 `ETHERSCAN_API_KEY`，通过 CLI/MCP 拉取并缓存 Etherscan 上已验证合约的 ABI、源码和基本元数据，辅助离线分析，不涉及部署或链上写操作。默认使用 Etherscan API V2。
 
 ## Repo 列表与职责（与 docmap 对齐）
 - etherscan-mcp：入口目录 `src/etherscan-mcp/`。模块包括 config（读取 env）、etherscan client（requests 封装）、cache（纯内存，进程级）、service（聚合合约详情）、CLI 入口、MCP 入口。
@@ -11,33 +11,35 @@ Last Updated: 2025-12-18
 ## 本地开发最小路径（只到开发自测）
 - 环境：Python 3.11（或兼容 3.10+）。
 - 安装：（可选）创建虚拟环境 → `pip install -r src/etherscan-mcp/requirements.txt`。
-- CLI：`ETHERSCAN_API_KEY=<key> [NETWORK=<network>|CHAIN_ID=<id>] [ETHERSCAN_BASE_URL=<url>] python -m app.cli fetch --address <contract> [--inline-limit N|--force-inline]`，默认基址 `https://api.etherscan.io/v2/api`、默认 chainid=1（mainnet）；成功时输出含 `abi` 与 `source_files` 的 JSON；当总源码超出内联阈值（默认 20000 字符）且未强制内联时，`source_files` 仅含摘要（filename/length/sha256/inline=false），并返回 `source_omitted`/`source_omitted_reason`；缺失/无效 key 时返回清晰错误。新增 `get-source-file` 子命令：`python -m app.cli get-source-file --address <contract> --filename <file> [--offset N --length M]`，按文件名获取源码，可分段返回。
+- CLI：  
+  - 合约：`ETHERSCAN_API_KEY=<key> [NETWORK=<network>|CHAIN_ID=<id>] [ETHERSCAN_BASE_URL=<url>] python -m app.cli fetch --address <contract> [--inline-limit N|--force-inline]`。源码超内联阈值（默认 20000 字符）且未强制时返回摘要（filename/length/sha256/inline=false）并附 `source_omitted`/`source_omitted_reason`。  
+  - 单文件源码：`python -m app.cli get-source-file --address <contract> --filename <file> [--offset N --length M]`。  
+  - 区块：`python -m app.cli get-block --block <latest|dec|0x> [--full-transactions] [--tx-hashes-only]`；`tx_hashes_only` 强制仅哈希。  
+  - 区块时间：`python -m app.cli get-block-time --block <latest|dec|0x>`，返回块号与时间戳（十进制/0x/ISO）。
 - MCP（Codex 本地注册示例）：  
-  1) 在项目根执行，添加服务器（替换你的 Python 解释器与 KEY）：  
+  1) 在项目根执行：  
      ```bash
-     codex mcp add etherscan-mcp \\
-       --env ETHERSCAN_API_KEY=<your-api-key> \\
+     codex mcp add etherscan-mcp \
+       --env ETHERSCAN_API_KEY=<your-api-key> \
        -- bash -lc "cd `pwd`/src/etherscan-mcp && python -m app.mcp_server --transport stdio"
      ```  
- 2) 工具：  
-     - `fetch_contract(address, network?, inline_limit?, force_inline?)`：ABI/源码/编译器信息；总源码超过 `inline_limit`（默认 20000）且未强制时，仅返回文件摘要（filename/length/sha256/inline=false），并提供 `source_omitted`/`source_omitted_reason`；强制内联时忽略阈值。  
-     - `get_contract_creation(address, network?)`：创建者、创建交易哈希、块高（静态可缓存）。  
-     - `detect_proxy(address, network?)`：读取 EIP-1967 implementation/admin 槽，返回实现/管理员与证据。  
-     - `list_transactions(address, network?, start_block?, end_block?, page?, offset?, sort?)`：普通交易分页。  
-     - `list_token_transfers(address, network?, token_type?, start_block?, end_block?, page?, offset?, sort?)`：ERC20/721/1155 转移分页。  
-     - `query_logs(address, network?, topics?, from_block?, to_block?, page?, offset?)`：按 topics 过滤日志，`topics` 必须为数组（可用 `None` 占位跳过某 topic），`from_block`/`to_block` 支持十进制或 `0x` 十六进制块号输入。  
-    - `get_storage_at(address, slot, network?, block_tag?)`：只读存储槽。  
-  - `get_transaction(tx_hash, network?)`：按 tx hash 查询单笔交易详情和回执（若可）；返回交易字段（from/to/value/gas/gasPrice/...）及回执关键字段（status/gasUsed/logs 等）。  
-  - `call_function(address, data?, function?, args?, network?, block_tag?, decimals?)`：eth_call 只读函数；支持直接传 ABI 编码的 `data`，也支持提供 `function`+`args` 自动编码；有 ABI 时自动解码返回并提供 decoded（含函数信息、outputs，多返回值展开，数值支持可选 decimals 缩放的 value_scaled），原始返回保留在 data；无 ABI/解码失败时 decoded 标注 error 但调用不抛异常。  
-      - `encode_function_data(function, args?)`：纯本地计算 4byte selector 与 ABI 编码 data，便于构造调用；`args` 必须为数组。  
-      - `convert(value, from, to, decimals?)`：链上数字轻量转换；from/to 支持 hex/dec/human/wei/gwei/eth，decimals 默认 18；支持 hex↔dec、整数↔人类可读金额（含千分位与科学计数字段）、wei/gwei/eth 互转，返回 JSON（original/converted/decimals/explain）。  
-      - `keccak(value, input_type?)`：keccak-256（非 sha3-256）；input_type: text|hex|bytes，支持单值或 list/tuple（按顺序拼接为 bytes 后哈希），文本按 UTF-8。返回 0x 前缀 hex。  
-      - call_function 在 ABI 已加载但缺少 selector 时改为放行 raw eth_call，返回原始 hex，decoded 中保留 error/warning；无 ABI 时同样放行 raw。  
-    - `get_source_file(address, filename, network?, offset?, length?)`：按文件名获取单个源码文件，支持可选 offset/length 分段，返回 content/sha256/total_length/truncated。  
-  - 参数形态提醒：`call_function.args`、`encode_function_data.args`、`query_logs.topics` 必须是数组；传入字符串/对象会报错，标量会自动包成单元素数组。  
-  - 代理感知：call_function 使用 EIP-1967 槽与 Etherscan Proxy/Implementation 元数据优先加载实现 ABI 进行 selector 校验与解码；探测异常不会缓存“非代理”结果，避免假阴性。  
-  无需手动常驻进程，Codex 按需启动。  
-- MCP 自测/重载提示：代码或工具列表变更后需在 Codex 侧重新连接/重新添加 MCP才能加载最新工具；可用主网示例地址用于快速验证（如 USDT `0xdAC17F958D2ee523a2206206994597C13D831ec7`、USDC `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48`）。
+  2) 工具：  
+     - `fetch_contract(address, network?, inline_limit?, force_inline?)`：ABI/源码/编译器信息，超限时仅摘要并给出 `source_omitted`。  
+     - `get_contract_creation(address, network?)`：创建者、创建交易哈希、块高。  
+     - `detect_proxy(address, network?)`：EIP-1967 implementation/admin 槽探测。  
+     - `list_transactions(address, network?, start_block?, end_block?, page?, offset?, sort?)`  
+     - `list_token_transfers(address, network?, token_type?, start_block?, end_block?, page?, offset?, sort?)`  
+     - `query_logs(address, network?, topics?, from_block?, to_block?, page?, offset?)`  
+     - `get_storage_at(address, slot, network?, block_tag?)`  
+     - `get_transaction(tx_hash, network?)`  
+     - `call_function(address, data?, function?, args?, network?, block_tag?, decimals?)`（含 encode/convert/keccak 辅助工具）  
+     - `get_source_file(address, filename, network?, offset?, length?)`  
+     - `get_block_by_number(block, network?, full_transactions?, tx_hashes_only?)`  
+     - `get_block_time_by_number(block, network?)`  
+    参数形态提示：`call_function.args`、`encode_function_data.args`、`query_logs.topics` 必须为数组，字符串/对象会报错，标量自动包成单元素数组。  
+    代理感知：call_function 优先实现 ABI；探测异常不缓存“非代理”。  
+    无需常驻进程，Codex 按需启动。  
+- MCP 自测/重载提示：工具列表变更后需在 Codex 侧重新连接/重新添加 MCP；可用主网示例地址 USDT `0xdAC17F958D2ee523a2206206994597C13D831ec7`、USDC `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48`。
 
 ## 网络参数支持
 - NETWORK 支持：`mainnet`/`ethereum`/`eth`（均指主网）、`sepolia`、`holesky`，或直接使用十进制 chain_id（字符串）/设置 `CHAIN_ID`。

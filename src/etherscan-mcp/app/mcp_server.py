@@ -224,6 +224,31 @@ def get_transaction(tx_hash: str, network: Optional[str] = None) -> dict:
 
 
 @server.tool(
+    name="get_block_by_number",
+    title="Get Block By Number",
+    description="Fetch a block by number (decimal, 0x, or latest). Use full_transactions to expand tx objects or tx_hashes_only to force hashes list.",
+)
+def get_block_by_number(
+    block: Any,
+    network: Optional[str] = None,
+    full_transactions: bool = False,
+    tx_hashes_only: bool = False,
+) -> dict:
+    svc = _get_service()
+    return svc.get_block_by_number(block, network, full_transactions, tx_hashes_only)
+
+
+@server.tool(
+    name="get_block_time_by_number",
+    title="Get Block Time By Number",
+    description="Fetch block timestamp (and block number) by number or latest.",
+)
+def get_block_time_by_number(block: Any, network: Optional[str] = None) -> dict:
+    svc = _get_service()
+    return svc.get_block_time_by_number(block, network)
+
+
+@server.tool(
     name="convert",
     title="Chain Number Convert",
     description="Convert hex/dec/human/wei/gwei/eth with decimals (default 18). Use convert(value, from, to, decimals?). Returns JSON with original, converted, explain.",

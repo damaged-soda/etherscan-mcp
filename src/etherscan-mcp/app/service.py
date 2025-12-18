@@ -317,6 +317,64 @@ class ContractService:
             "receipt": receipt_obj,
         }
 
+    def get_block_by_number(
+        self,
+        block: Union[int, str],
+        network: Optional[str] = None,
+        full_transactions: bool = False,
+        tx_hashes_only: bool = False,
+    ) -> Dict[str, Any]:
+        network_label, chain_id = self._resolve_network_and_chain(network)
+        self.client.chain_id = chain_id
+        tag = self._normalize_block_tag(block)
+
+        include_full_txs = bool(full_transactions)
+        if tx_hashes_only:
+            include_full_txs = False
+
+        payload = self.client.get_block_by_number(tag, include_full_txs)
+        result = self._extract_proxy_result(payload)
+        if not isinstance(result, dict):
+            raise ValueError("Unexpected block response from Etherscan.")
+
+        block_obj = self._map_block(result, force_hashes_only=tx_hashes_only)
+        return {
+            "network": network_label,
+            "chain_id": chain_id,
+            "block": block_obj,
+            "full_transactions": include_full_txs,
+            "tx_hashes_only": bool(tx_hashes_only),
+        }
+
+    def get_block_time_by_number(
+        self, block: Union[int, str], network: Optional[str] = None
+    ) -> Dict[str, Any]:
+        block_data = self.get_block_by_number(block, network, full_transactions=False, tx_hashes_only=True)
+        blk = block_data.get("block") or {}
+        number_hex = blk.get("number")
+        timestamp_hex = blk.get("timestamp")
+
+        number_int = self._hex_to_int(number_hex, "block_number") if number_hex else None
+        timestamp_int = self._hex_to_int(timestamp_hex, "timestamp") if timestamp_hex else None
+        iso_time: Optional[str] = None
+        if timestamp_int is not None:
+            try:
+                import datetime
+
+                iso_time = datetime.datetime.utcfromtimestamp(timestamp_int).isoformat() + "Z"
+            except Exception:
+                iso_time = None
+
+        return {
+            "network": block_data.get("network"),
+            "chain_id": block_data.get("chain_id"),
+            "block_number": number_int,
+            "block_number_hex": number_hex,
+            "timestamp": timestamp_int,
+            "timestamp_hex": timestamp_hex,
+            "timestamp_iso": iso_time,
+        }
+
     def call_function(
         self,
         address: str,
@@ -1535,6 +1593,19 @@ class ContractService:
 
         raise ValueError("block_tag must be latest|pending|earliest|block number.")
 
+    def _hex_to_int(self, value: Optional[str], field: str) -> Optional[int]:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError(f"{field} must be a hex string.")
+        candidate = value.strip().lower()
+        if not candidate.startswith("0x"):
+            raise ValueError(f"{field} must be a 0x-prefixed hex string.")
+        try:
+            return int(candidate, 16)
+        except Exception as exc:
+            raise ValueError(f"{field} must be a valid hex string.") from exc
+
     def _normalize_hex_string(self, value: str, field: str, pad_to: Optional[int] = None) -> str:
         if not isinstance(value, str):
             raise ValueError(f"{field} must be a hex string.")
@@ -1549,6 +1620,80 @@ class ContractService:
         if pad_to:
             candidate = f"0x{hex_body.rjust(pad_to, '0')}"
         return candidate
+
+    def _map_block(self, block: Dict[str, Any], force_hashes_only: bool = False) -> Dict[str, Any]:
+        if not isinstance(block, dict):
+            return {}
+        mapped = {
+            "number": block.get("number"),
+            "hash": block.get("hash"),
+            "parentHash": block.get("parentHash"),
+            "nonce": block.get("nonce"),
+            "sha3Uncles": block.get("sha3Uncles"),
+            "logsBloom": block.get("logsBloom"),
+            "transactionsRoot": block.get("transactionsRoot"),
+            "stateRoot": block.get("stateRoot"),
+            "receiptsRoot": block.get("receiptsRoot"),
+            "miner": block.get("miner"),
+            "difficulty": block.get("difficulty"),
+            "totalDifficulty": block.get("totalDifficulty"),
+            "extraData": block.get("extraData"),
+            "size": block.get("size"),
+            "gasLimit": block.get("gasLimit"),
+            "gasUsed": block.get("gasUsed"),
+            "timestamp": block.get("timestamp"),
+            "transactions": None,
+            "uncles": block.get("uncles"),
+            "baseFeePerGas": block.get("baseFeePerGas"),
+            "mixHash": block.get("mixHash"),
+            "blobGasUsed": block.get("blobGasUsed"),
+            "excessBlobGas": block.get("excessBlobGas"),
+            "withdrawals": block.get("withdrawals"),
+            "withdrawalsRoot": block.get("withdrawalsRoot"),
+            "parentBeaconBlockRoot": block.get("parentBeaconBlockRoot"),
+            "blobGasPrice": block.get("blobGasPrice"),
+        }
+
+        txs = block.get("transactions")
+        if force_hashes_only:
+            if isinstance(txs, list):
+                mapped["transactions"] = [tx.get("hash") if isinstance(tx, dict) else tx for tx in txs]
+            else:
+                mapped["transactions"] = txs
+            return mapped
+
+        if isinstance(txs, list) and all(isinstance(tx, str) for tx in txs):
+            mapped["transactions"] = txs
+            return mapped
+
+        if isinstance(txs, list):
+            mapped_txs = []
+            for tx in txs:
+                if not isinstance(tx, dict):
+                    mapped_txs.append(tx)
+                    continue
+                mapped_txs.append(
+                    {
+                        "hash": tx.get("hash"),
+                        "from": tx.get("from"),
+                        "to": tx.get("to"),
+                        "value": tx.get("value"),
+                        "nonce": tx.get("nonce"),
+                        "gas": tx.get("gas"),
+                        "gasPrice": tx.get("gasPrice"),
+                        "input": tx.get("input"),
+                        "transactionIndex": tx.get("transactionIndex"),
+                        "type": tx.get("type"),
+                        "maxFeePerGas": tx.get("maxFeePerGas"),
+                        "maxPriorityFeePerGas": tx.get("maxPriorityFeePerGas"),
+                        "blobVersionedHashes": tx.get("blobVersionedHashes"),
+                        "accessList": tx.get("accessList"),
+                    }
+                )
+            mapped["transactions"] = mapped_txs
+        else:
+            mapped["transactions"] = txs
+        return mapped
 
     def _function_signature(self, name: str, inputs: List[Dict[str, Any]]) -> str:
         types: List[str] = []

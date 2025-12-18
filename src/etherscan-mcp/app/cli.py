@@ -66,6 +66,40 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional length (chars) to return from offset.",
     )
 
+    block_parser = subparsers.add_parser("get-block", help="Fetch a block by number or latest")
+    block_parser.add_argument(
+        "--block",
+        required=True,
+        help="Block identifier: latest, decimal number, or 0x-prefixed hex.",
+    )
+    block_parser.add_argument(
+        "--network",
+        required=False,
+        help="Optional network override. Defaults to NETWORK env or mainnet.",
+    )
+    block_parser.add_argument(
+        "--full-transactions",
+        action="store_true",
+        help="Return full transaction objects (may be large).",
+    )
+    block_parser.add_argument(
+        "--tx-hashes-only",
+        action="store_true",
+        help="Force transactions to be returned as hashes list (overrides --full-transactions).",
+    )
+
+    block_time_parser = subparsers.add_parser("get-block-time", help="Fetch block time by number or latest")
+    block_time_parser.add_argument(
+        "--block",
+        required=True,
+        help="Block identifier: latest, decimal number, or 0x-prefixed hex.",
+    )
+    block_time_parser.add_argument(
+        "--network",
+        required=False,
+        help="Optional network override. Defaults to NETWORK env or mainnet.",
+    )
+
     return parser
 
 
@@ -92,6 +126,20 @@ def main(argv: Optional[list[str]] = None) -> None:
                 args.network,
                 offset=args.offset,
                 length=args.length,
+            )
+            print(json.dumps(result, indent=2))
+        elif args.command == "get-block":
+            result = service.get_block_by_number(
+                args.block,
+                args.network,
+                full_transactions=args.full_transactions,
+                tx_hashes_only=args.tx_hashes_only,
+            )
+            print(json.dumps(result, indent=2))
+        elif args.command == "get-block-time":
+            result = service.get_block_time_by_number(
+                args.block,
+                args.network,
             )
             print(json.dumps(result, indent=2))
     except Exception as exc:  # pylint: disable=broad-except
