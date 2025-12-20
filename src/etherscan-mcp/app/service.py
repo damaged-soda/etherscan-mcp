@@ -1836,7 +1836,12 @@ class ContractService:
 
     def _parse_function_signature(self, signature: str) -> Tuple[str, List[str]]:
         text = signature.strip()
-        if "(" not in text or not text.endswith(")"):
+        if "(" not in text:
+            fn = text.strip()
+            if not fn or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", fn):
+                raise ValueError("Invalid function name.")
+            return fn, []
+        if not text.endswith(")"):
             raise ValueError("function must be in the form name(type1,type2,...)")
         name, rest = text.split("(", 1)
         fn = name.strip()
