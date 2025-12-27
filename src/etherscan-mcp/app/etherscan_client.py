@@ -169,6 +169,9 @@ class EtherscanClient:
         }
         return self._request(params)
 
+    def get_chainlist(self, chainlist_url: str) -> Dict[str, Any]:
+        return self._request_url(chainlist_url, params={})
+
     def _is_rate_limit_payload(self, payload: Any) -> bool:
         if not isinstance(payload, dict):
             return False
@@ -196,6 +199,45 @@ class EtherscanClient:
             or "max calls per second" in haystack
             or "too many requests" in haystack
         )
+
+    def _request_url(self, url: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        merged = {**(params or {}), "apikey": self.api_key}
+        last_error: Optional[Exception] = None
+
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                response = self.session.get(
+                    url,
+                    params=merged,
+                    timeout=self.timeout,
+                )
+                if response.status_code >= 500 and attempt < self.max_retries:
+                    time.sleep(self.backoff_seconds * attempt)
+                    continue
+
+                response.raise_for_status()
+                payload = response.json()
+                if self._is_rate_limit_payload(payload) and attempt < self.max_retries:
+                    time.sleep(self.backoff_seconds * attempt)
+                    continue
+                return payload
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt < self.max_retries:
+                    time.sleep(self.backoff_seconds * attempt)
+                else:
+                    raise
+            except ValueError as exc:
+                last_error = exc
+                if attempt < self.max_retries:
+                    time.sleep(self.backoff_seconds * attempt)
+                else:
+                    raise ValueError("Failed to parse response from Etherscan.") from exc
+
+        if last_error:
+            raise last_error
+
+        raise RuntimeError("Request failed without raising an exception.")
 
     def _request(self, params: Dict[str, Any]) -> Dict[str, Any]:
         merged = {**params, "apikey": self.api_key}

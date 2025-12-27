@@ -249,6 +249,28 @@ def get_block_time_by_number(block: Any, network: Optional[str] = None) -> dict:
 
 
 @server.tool(
+    name="list_chains",
+    title="List Supported Chains",
+    description="List chains supported by Etherscan V2 via /v2/chainlist.",
+)
+def list_chains(include_degraded: bool = True) -> dict:
+    svc = _get_service()
+    chains = svc.chains.list_chains(include_degraded=include_degraded)
+    return {"total": len(chains), "result": chains}
+
+
+@server.tool(
+    name="resolve_chain",
+    title="Resolve Network To Chain ID",
+    description="Resolve a network string (name/alias) to chainid via chainlist. Prefer numeric chainid for precision.",
+)
+def resolve_chain(network: str) -> dict:
+    svc = _get_service()
+    label, cid, meta = svc.chains.resolve(network)
+    return {"input": network, "network": label, "chain_id": cid, "meta": meta}
+
+
+@server.tool(
     name="convert",
     title="Chain Number Convert",
     description="Convert hex/dec/human/wei/gwei/eth with decimals (default 18). Use convert(value, from, to, decimals?). Returns JSON with original, converted, explain.",

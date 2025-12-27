@@ -12,10 +12,12 @@ Etherscan MCP：单仓 Python 项目。用户提供 `ETHERSCAN_API_KEY`，通过
 - 环境：Python 3.11（或兼容 3.10+）。
 - 安装：（可选）创建虚拟环境 → `pip install -r src/etherscan-mcp/requirements.txt`。
 - CLI：  
-  - 合约：`ETHERSCAN_API_KEY=<key> [NETWORK=<network>|CHAIN_ID=<id>] [ETHERSCAN_BASE_URL=<url>] python -m app.cli fetch --address <contract> [--inline-limit N|--force-inline]`。源码超内联阈值（默认 20000 字符）且未强制时返回摘要（filename/length/sha256/inline=false）并附 `source_omitted`/`source_omitted_reason`。  
-  - 单文件源码：`python -m app.cli get-source-file --address <contract> --filename <file> [--offset N --length M]`。  
-  - 区块：`python -m app.cli get-block --block <latest|dec|0x> [--full-transactions] [--tx-hashes-only]`；`tx_hashes_only` 强制仅哈希。  
-  - 区块时间：`python -m app.cli get-block-time --block <latest|dec|0x>`，返回块号与时间戳（十进制/0x/ISO）。
+  - 合约：`ETHERSCAN_API_KEY=<key> [NETWORK=<network>|CHAIN_ID=<id>] [ETHERSCAN_BASE_URL=<url>] python -m app fetch --address <contract> [--inline-limit N|--force-inline]`。源码超内联阈值（默认 20000 字符）且未强制时返回摘要（filename/length/sha256/inline=false）并附 `source_omitted`/`source_omitted_reason`。  
+  - 单文件源码：`python -m app get-source-file --address <contract> --filename <file> [--offset N --length M]`。  
+  - 区块：`python -m app get-block --block <latest|dec|0x> [--full-transactions] [--tx-hashes-only]`；`tx_hashes_only` 强制仅哈希。  
+  - 区块时间：`python -m app get-block-time --block <latest|dec|0x>`，返回块号与时间戳（十进制/0x/ISO）。  
+  - 链清单：`python -m app list-chains [--include-degraded]`。  
+  - 解析链：`python -m app resolve-chain --network <name|alias|chainid>`（如 `arb` / `Arbitrum One Mainnet` / `42161`）。
 - MCP（Codex 本地注册示例）：  
   1) 在项目根执行：  
      ```bash
@@ -27,6 +29,8 @@ Etherscan MCP：单仓 Python 项目。用户提供 `ETHERSCAN_API_KEY`，通过
      - `fetch_contract(address, network?, inline_limit?, force_inline?)`：ABI/源码/编译器信息，超限时仅摘要并给出 `source_omitted`。  
      - `get_contract_creation(address, network?)`：创建者、创建交易哈希、块高。  
      - `detect_proxy(address, network?)`：EIP-1967 implementation/admin 槽探测。  
+     - `list_chains(include_degraded?)`：列出 Etherscan V2 `/v2/chainlist` 返回的链清单。  
+     - `resolve_chain(network)`：解析 network 字符串/别名为 `chain_id`（建议优先传数字 chainid 以避免歧义）。  
      - `list_transactions(address, network?, start_block?, end_block?, page?, offset?, sort?)`  
      - `list_token_transfers(address, network?, token_type?, start_block?, end_block?, page?, offset?, sort?)`  
      - `query_logs(address, network?, topics?, from_block?, to_block?, page?, offset?)`  
@@ -42,5 +46,12 @@ Etherscan MCP：单仓 Python 项目。用户提供 `ETHERSCAN_API_KEY`，通过
 - MCP 自测/重载提示：工具列表变更后需在 Codex 侧重新连接/重新添加 MCP；可用主网示例地址 USDT `0xdAC17F958D2ee523a2206206994597C13D831ec7`、USDC `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48`。
 
 ## 网络参数支持
-- NETWORK 支持：`mainnet`/`ethereum`/`eth`（均指主网）、`sepolia`、`holesky`，或直接使用十进制 chain_id（字符串）/设置 `CHAIN_ID`。
-- 当 network 未被识别时，错误提示会列出支持值，并建议直接提供 `CHAIN_ID`。
+- network 入参支持（任意需要 network 的 CLI/MCP 参数一致）：
+  - 数字 chainid（十进制字符串）：如 `"42161"`（最稳定，始终可用）
+  - 链名/近似链名：基于 Etherscan V2 `GET /v2/chainlist` 动态解析
+  - 常用简称：通过轻量别名层映射到动态清单（如 `arb`、`arb-sepolia`）
+- 配置：
+  - `CHAIN_ID`：硬覆盖默认链（用于 network 未显式传入的场景）
+  - `ETHERSCAN_CHAINLIST_URL`：链清单端点（默认 `https://api.etherscan.io/v2/chainlist`）
+  - `CHAINLIST_TTL_SECONDS`：链清单缓存 TTL（默认 3600 秒）
+- 安全策略：默认 `NETWORK` 无法解析且未设置 `CHAIN_ID` 时会明确报错，避免误用主网；可用 `list-chains/resolve-chain`（或 MCP 的 `list_chains/resolve_chain`）先查后用。

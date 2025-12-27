@@ -6,6 +6,7 @@ import hashlib
 from decimal import Decimal, getcontext
 
 from .cache import ContractCache
+from .chains import ChainRegistry
 from .config import Config, resolve_chain_id
 from .etherscan_client import EtherscanClient
 
@@ -37,6 +38,24 @@ class ContractService:
             max_retries=config.max_retries,
             backoff_seconds=config.backoff_seconds,
         )
+        self.chains = ChainRegistry(
+            client=self.client,
+            chainlist_url=config.chainlist_url,
+            ttl_seconds=config.chainlist_ttl_seconds,
+        )
+
+        # Best-effort: if NETWORK is not in the static fallback map and CHAIN_ID is not set,
+        # resolve the default chain via /v2/chainlist once at startup.
+        if not self.config.chain_id_override:
+            try:
+                _ = resolve_chain_id(self.config.network)
+            except Exception:
+                try:
+                    label, cid, _meta = self.chains.resolve(self.config.network)
+                    self.config.chain_id = cid
+                    self.config.network = label
+                except Exception:
+                    pass
 
     def fetch_contract(
         self,
@@ -1195,11 +1214,40 @@ class ContractService:
             return None
 
     def _resolve_network_and_chain(self, network: Optional[str]) -> Tuple[str, str]:
-        if network:
-            chain_id = resolve_chain_id(network)
-            return network.lower(), chain_id
+        if network is not None:
+            network_value = str(network).strip()
+            if not network_value:
+                raise ValueError("network must be a non-empty string.")
+            try:
+                label, cid, _meta = self.chains.resolve(network_value)
+                return label, cid
+            except Exception as exc:
+                try:
+                    cid = resolve_chain_id(network_value)
+                    return network_value.lower(), cid
+                except Exception:
+                    raise ValueError(
+                        f"Unknown network '{network_value}'. "
+                        "Use numeric chainid (e.g. 42161) or call resolve-chain/list-chains."
+                    ) from exc
 
-        return self.config.network, self.config.chain_id
+        # network not provided: use defaults
+        if self.config.chain_id_override:
+            return self.config.network, self.config.chain_id_override
+
+        try:
+            label, cid, _meta = self.chains.resolve(self.config.network)
+            return label, cid
+        except Exception as exc:
+            try:
+                cid = resolve_chain_id(self.config.network)
+                return self.config.network, cid
+            except Exception:
+                raise ValueError(
+                    f"Default NETWORK '{self.config.network}' could not be resolved. "
+                    "To avoid accidental mainnet requests, set CHAIN_ID=<numeric chainid> "
+                    "or pass --network <chainid> explicitly."
+                ) from exc
 
     def _parse_contract_response(
         self,

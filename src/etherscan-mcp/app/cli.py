@@ -100,6 +100,24 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional network override. Defaults to NETWORK env or mainnet.",
     )
 
+    chains_parser = subparsers.add_parser(
+        "list-chains", help="List supported chains from Etherscan chainlist"
+    )
+    chains_parser.add_argument(
+        "--include-degraded",
+        action="store_true",
+        help="Include offline/degraded chains",
+    )
+
+    resolve_parser = subparsers.add_parser(
+        "resolve-chain", help="Resolve a network string to chainid via chainlist"
+    )
+    resolve_parser.add_argument(
+        "--network",
+        required=True,
+        help="Network name/alias or numeric chainid",
+    )
+
     return parser
 
 
@@ -142,6 +160,22 @@ def main(argv: Optional[list[str]] = None) -> None:
                 args.network,
             )
             print(json.dumps(result, indent=2))
+        elif args.command == "list-chains":
+            chains = service.chains.list_chains(include_degraded=bool(args.include_degraded))
+            print(json.dumps({"total": len(chains), "result": chains}, indent=2))
+        elif args.command == "resolve-chain":
+            label, cid, meta = service.chains.resolve(args.network)
+            print(
+                json.dumps(
+                    {
+                        "input": args.network,
+                        "network": label,
+                        "chain_id": cid,
+                        "meta": meta,
+                    },
+                    indent=2,
+                )
+            )
     except Exception as exc:  # pylint: disable=broad-except
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
