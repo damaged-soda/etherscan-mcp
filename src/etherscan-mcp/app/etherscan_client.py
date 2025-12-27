@@ -169,6 +169,34 @@ class EtherscanClient:
         }
         return self._request(params)
 
+    def _is_rate_limit_payload(self, payload: Any) -> bool:
+        if not isinstance(payload, dict):
+            return False
+
+        candidates: list[str] = []
+        for key in ("message", "result"):
+            value = payload.get(key)
+            if isinstance(value, str) and value:
+                candidates.append(value)
+
+        error_obj = payload.get("error")
+        if isinstance(error_obj, dict):
+            for key in ("message", "data"):
+                value = error_obj.get(key)
+                if isinstance(value, str) and value:
+                    candidates.append(value)
+
+        haystack = " ".join(candidates).lower()
+        if not haystack:
+            return False
+
+        return (
+            "rate limit" in haystack
+            or "max calls per sec" in haystack
+            or "max calls per second" in haystack
+            or "too many requests" in haystack
+        )
+
     def _request(self, params: Dict[str, Any]) -> Dict[str, Any]:
         merged = {**params, "apikey": self.api_key}
         last_error: Optional[Exception] = None
@@ -185,7 +213,11 @@ class EtherscanClient:
                     continue
 
                 response.raise_for_status()
-                return response.json()
+                payload = response.json()
+                if self._is_rate_limit_payload(payload) and attempt < self.max_retries:
+                    time.sleep(self.backoff_seconds * attempt)
+                    continue
+                return payload
             except requests.RequestException as exc:
                 last_error = exc
                 if attempt < self.max_retries:

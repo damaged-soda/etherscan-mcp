@@ -1,9 +1,9 @@
 # 项目概览（SOT）
 
-Last Updated: 2025-12-19
+Last Updated: 2025-12-27
 
 ## 项目是什么
-Etherscan MCP：单仓 Python 项目。用户提供 `ETHERSCAN_API_KEY`，通过 CLI/MCP 拉取并缓存 Etherscan 上已验证合约的 ABI、源码和基本元数据，辅助离线分析，不涉及部署或链上写操作。默认使用 Etherscan API V2。
+Etherscan MCP：单仓 Python 项目。用户提供 `ETHERSCAN_API_KEY`，通过 CLI/MCP 拉取并缓存 Etherscan 上已验证合约的 ABI、源码和基本元数据，辅助离线分析，不涉及部署或链上写操作。默认使用 Etherscan API V2，并内置基础退避重试（含限流时自动退避）。
 
 ## Repo 列表与职责（与 docmap 对齐）
 - etherscan-mcp：入口目录 `src/etherscan-mcp/`。模块包括 config（读取 env）、etherscan client（requests 封装）、cache（纯内存，进程级）、service（聚合合约详情）、CLI 入口、MCP 入口。

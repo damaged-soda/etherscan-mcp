@@ -1344,13 +1344,6 @@ class ContractService:
         if not isinstance(payload, dict):
             raise ValueError("Unexpected response from Etherscan.")
 
-        if "result" in payload:
-            res = payload.get("result")
-            if res is None and allow_none:
-                return None
-            if isinstance(res, (str, dict, list)):
-                return res
-
         # JSON-RPC style error object from Etherscan proxy endpoints
         error_obj = payload.get("error")
         if isinstance(error_obj, dict):
@@ -1367,18 +1360,33 @@ class ContractService:
             detail = ": ".join(parts) if parts else "unknown error"
             raise ValueError(f"Etherscan error: {detail}.")
 
-        status = str(payload.get("status", "")).strip()
-        message = payload.get("message", "")
-        result = payload.get("result")
-        if status == "1":
-            return result
-        if allow_none and result is None:
-            return None
+        # Etherscan "module" style response: status/message/result (including rate-limit NOTOK)
+        if "status" in payload or "message" in payload:
+            status = str(payload.get("status", "")).strip()
+            message = payload.get("message", "")
+            result = payload.get("result")
+            if status == "1":
+                return result
+            if allow_none and result is None:
+                return None
 
-        detail = ""
-        if isinstance(result, str):
-            detail = result
-        raise ValueError(f"Etherscan error: {detail or message or 'unknown error'}.")
+            detail = result if isinstance(result, str) else ""
+            raise ValueError(f"Etherscan error: {detail or message or 'unknown error'}.")
+
+        # JSON-RPC style success response: {jsonrpc,id,result}
+        if "result" in payload:
+            res = payload.get("result")
+            if res is None and allow_none:
+                return None
+            if isinstance(res, str):
+                try:
+                    return self._normalize_hex_string(res, "result")
+                except ValueError:
+                    raise ValueError(f"Etherscan error: {res}.")
+            if isinstance(res, (dict, list)):
+                return res
+
+        raise ValueError("Unexpected response from Etherscan.")
 
     def _normalize_block_range(
         self, start: Optional[Union[int, str]], end: Optional[Union[int, str]]
