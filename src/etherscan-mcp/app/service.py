@@ -1273,7 +1273,7 @@ class ContractService:
 
         entry = result[0]
         abi_raw = entry.get("ABI", "[]")
-        abi = self._parse_abi(abi_raw)
+        abi = self._parse_abi(abi_raw, address, network, chain_id)
         source_files = self._parse_source_code(entry.get("SourceCode", ""))
         compiler = entry.get("CompilerVersion") or ""
         proxy_flag = str(entry.get("Proxy", "")).strip().lower()
@@ -1316,11 +1316,36 @@ class ContractService:
             "evidence": evidence,
         }
 
-    def _parse_abi(self, abi_raw: str) -> Any:
+    def _parse_abi(self, abi_raw: Any, address: str, network: str, chain_id: str) -> Any:
+        if abi_raw is None:
+            abi_raw = "[]"
+
+        if not isinstance(abi_raw, str):
+            try:
+                abi_raw = str(abi_raw)
+            except Exception as exc:
+                raise ValueError(
+                    f"Invalid ABI returned from Etherscan for {address} "
+                    f"(network={network}, chain_id={chain_id}). ABI field could not be stringified."
+                ) from exc
+
+        preview = re.sub(r"\s+", " ", abi_raw).strip()
+        if len(preview) > 240:
+            preview = preview[:240] + "..."
+
         try:
             return json.loads(abi_raw)
-        except json.JSONDecodeError as exc:
-            raise ValueError("Invalid ABI returned from Etherscan.") from exc
+        except (json.JSONDecodeError, TypeError) as exc:
+            lowered = abi_raw.strip().lower()
+            if "not verified" in lowered or "source code not verified" in lowered:
+                raise ValueError(
+                    f"Contract {address} is not verified on Etherscan; ABI is unavailable "
+                    f"(network={network}, chain_id={chain_id}). ABI field: {preview}"
+                ) from exc
+            raise ValueError(
+                f"Invalid ABI returned from Etherscan for {address} "
+                f"(network={network}, chain_id={chain_id}). ABI field: {preview}"
+            ) from exc
 
     def _parse_source_code(self, raw: str) -> List[Dict[str, str]]:
         if not raw:

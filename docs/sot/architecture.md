@@ -1,6 +1,6 @@
 # 架构说明（SOT）
 
-Last Updated: 2025-12-27
+Last Updated: 2025-12-28
 
 ## 模块边界（按 repo 或关键模块描述）
 - config：从环境读取配置（必需 `ETHERSCAN_API_KEY`；可选 `ETHERSCAN_BASE_URL`、`NETWORK`、`CHAIN_ID`、`ETHERSCAN_CHAINLIST_URL`、`CHAINLIST_TTL_SECONDS`、`REQUEST_TIMEOUT`、`REQUEST_RETRIES`、`REQUEST_BACKOFF_SECONDS`），封装为配置对象。默认基址 `https://api.etherscan.io/v2/api`，默认 network=mainnet、chainid=1；`CHAIN_ID` 可硬覆盖默认链。
@@ -10,6 +10,7 @@ Last Updated: 2025-12-27
 - etherscan client：基于 requests 的 REST 封装（默认 V2 基址），对合约源码、创建信息、交易、代币转移、日志，以及 `proxy.eth_getStorageAt`/`proxy.eth_call` 等接口做有限重试与简单退避；除 HTTP/网络异常外，也会对 payload 中可识别的限流信息（例如 `rate limit`/`Max calls per sec`/`Too Many Requests`）进行退避重试。使用 `X-API-Key` 头并附带 `chainid` 参数；额外提供请求任意 URL 的入口用于 chainlist 拉取（复用相同重试/限流逻辑）。
 - cache：纯内存缓存（进程级，不落盘）；按地址+chainid 键控；合约详情与创建信息使用不同命名空间，动态列表类接口默认不缓存。
 - service：聚合合约详情与调研能力，统一地址格式校验和 network/chainid 解析；解析 Etherscan 响应（包含多文件 SourceCode JSON）；新增能力：创建信息（可缓存）、代理检测（EIP-1967 implementation/admin 槽）、交易列表、代币转移列表（ERC20/721/1155）、日志查询、存储槽读取、eth_call 只读调用；动态接口对空结果返回空列表，对错误返回可读 ValueError；fetch_contract 支持 inline_limit/force_inline 内联策略，超限时仅返回摘要并指示 source_omitted/source_omitted_reason；get_source_file 支持按文件名分段获取源码（offset/length），返回 content/sha256/total_length/truncated；get_block_by_number 提供区块详情（支持 latest/十进制/0x，full_transactions 展开交易对象，tx_hashes_only 强制仅哈希）；get_block_time_by_number 基于区块 timestamp 返回块号/时间戳/ISO。
+  - ABI 解析与未验证识别：getsourcecode 的 `ABI` 字段优先按 JSON 解析；若返回典型未验证文案（如 `Contract source code not verified`），则明确报错提示“合约未验证导致 ABI 不可用”，并带 address/network/chain_id 与截断摘要；其它非 JSON ABI 也会在错误中附带摘要便于排查。
   - network/chainid 解析：显式传入 `network` 时优先走 `chains.resolve()`（支持 `arb` 等别名）；`network=None` 时使用默认（若设置 `CHAIN_ID` 则优先覆盖）；默认网络无法解析时抛错避免误用主网。
   - 块号输入兼容：块范围相关字段（start_block/end_block/from_block/to_block）接受整数、十进制字符串或 `0x` 十六进制字符串，统一解析为整数；非法输入报错提示“十进制或 0x 前缀”。
   - proxy/eth_call/eth_getStorageAt 错误处理：若 Etherscan 返回 JSON-RPC error 对象，透出其中的 code/message/data；若返回 module 风格的 `status/message`（例如限流 `NOTOK`），则按错误处理并抛出可读 ValueError；对 proxy 成功响应中的字符串 `result` 会校验为 hex（非 hex 视为错误信息，避免把限流文案当作成功结果）。

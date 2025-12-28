@@ -1,6 +1,6 @@
 # 项目概览（SOT）
 
-Last Updated: 2025-12-27
+Last Updated: 2025-12-28
 
 ## 项目是什么
 Etherscan MCP：单仓 Python 项目。用户提供 `ETHERSCAN_API_KEY`，通过 CLI/MCP 拉取并缓存 Etherscan 上已验证合约的 ABI、源码和基本元数据，辅助离线分析，不涉及部署或链上写操作。默认使用 Etherscan API V2，并内置基础退避重试（含限流时自动退避）。
@@ -26,7 +26,7 @@ Etherscan MCP：单仓 Python 项目。用户提供 `ETHERSCAN_API_KEY`，通过
        -- bash -lc "cd `pwd`/src/etherscan-mcp && python -m app.mcp_server --transport stdio"
      ```  
   2) 工具：  
-     - `fetch_contract(address, network?, inline_limit?, force_inline?)`：ABI/源码/编译器信息，超限时仅摘要并给出 `source_omitted`。  
+     - `fetch_contract(address, network?, inline_limit?, force_inline?)`：ABI/源码/编译器信息，超限时仅摘要并给出 `source_omitted`；未验证合约会明确报错提示 ABI 不可用。  
      - `get_contract_creation(address, network?)`：创建者、创建交易哈希、块高。  
      - `detect_proxy(address, network?)`：EIP-1967 implementation/admin 槽探测。  
      - `list_chains(include_degraded?)`：列出 Etherscan V2 `/v2/chainlist` 返回的链清单。  
