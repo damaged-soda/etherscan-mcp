@@ -9,6 +9,7 @@ from .cache import ContractCache
 from .chains import ChainRegistry
 from .config import Config, resolve_chain_id
 from .etherscan_client import EtherscanClient
+from .rpc_client import RpcClient
 
 ADDRESS_PATTERN = re.compile(r"^0x[a-fA-F0-9]{40}$")
 EIP1967_IMPLEMENTATION_SLOT = "0x360894A13BA1A3210667C828492DB98DCA3E2076CC3735A920A3CA505D382BBC"
@@ -17,6 +18,7 @@ MAX_BLOCK = 99999999
 DEFAULT_PAGE = 1
 DEFAULT_OFFSET = 100
 DEFAULT_INLINE_SOURCE_LIMIT = 20000
+RPC_LOGS_BLOCK_STEP = 2000
 
 # Increase precision for Decimal-based formatting
 getcontext().prec = 100
@@ -30,6 +32,7 @@ class ContractService:
         self.cache = ContractCache()
         self.creation_cache = ContractCache()
         self.proxy_cache = ContractCache()
+        self._rpc_clients: Dict[str, RpcClient] = {}
         self.client = EtherscanClient(
             api_key=config.api_key,
             base_url=config.base_url,
@@ -159,8 +162,21 @@ class ContractService:
     def detect_proxy(self, address: str, network: Optional[str] = None) -> Dict[str, Any]:
         normalized_address, network_label, chain_id = self._prepare_context(address, network)
 
-        impl_word = self._read_storage_word(normalized_address, EIP1967_IMPLEMENTATION_SLOT)
-        admin_word = self._read_storage_word(normalized_address, EIP1967_ADMIN_SLOT)
+        allow_default_rpc = network is None
+        impl_word = self._read_storage_word(
+            normalized_address,
+            EIP1967_IMPLEMENTATION_SLOT,
+            "latest",
+            chain_id=chain_id,
+            allow_default_rpc=allow_default_rpc,
+        )
+        admin_word = self._read_storage_word(
+            normalized_address,
+            EIP1967_ADMIN_SLOT,
+            "latest",
+            chain_id=chain_id,
+            allow_default_rpc=allow_default_rpc,
+        )
 
         implementation = self._storage_word_to_address(impl_word)
         admin = self._storage_word_to_address(admin_word)
@@ -272,16 +288,57 @@ class ContractService:
         offset: Optional[int] = None,
     ) -> Dict[str, Any]:
         normalized_address, network_label, chain_id = self._prepare_context(address, network)
-        start, end = self._normalize_block_range(from_block, to_block)
         page_num = self._normalize_positive_int(page, DEFAULT_PAGE, "page")
         page_size = self._normalize_positive_int(offset, DEFAULT_OFFSET, "offset")
-        topic_params = self._normalize_topics(topics)
 
-        payload = self.client.get_logs(
-            normalized_address, start, end, topic_params, page_num, page_size
-        )
-        result = self._extract_result_list(payload, require_non_empty=False)
-        logs = [self._map_log(entry) for entry in result if isinstance(entry, dict)]
+        allow_default_rpc = network is None
+        rpc = self._get_rpc_client(chain_id, allow_default_rpc)
+        if rpc:
+            start_block = self._parse_block_number(from_block, 0, "from_block")
+            if to_block is None:
+                end_block = rpc.get_block_number()
+            else:
+                end_block = self._parse_block_number(to_block, 0, "to_block")
+            if start_block > end_block:
+                raise ValueError("from_block cannot be greater than to_block.")
+
+            topics_list = self._normalize_topics_list(topics)
+            needed = page_num * page_size
+            raw_logs: List[Dict[str, Any]] = []
+
+            current = start_block
+            while current <= end_block and len(raw_logs) < needed:
+                seg_end = min(end_block, current + RPC_LOGS_BLOCK_STEP - 1)
+                filt: Dict[str, Any] = {
+                    "address": normalized_address,
+                    "fromBlock": hex(current),
+                    "toBlock": hex(seg_end),
+                }
+                if topics_list is not None:
+                    filt["topics"] = topics_list
+
+                chunk = rpc.call("eth_getLogs", [filt])
+                if not isinstance(chunk, list):
+                    raise ValueError("RPC error: eth_getLogs returned unexpected result.")
+                for entry in chunk:
+                    if isinstance(entry, dict):
+                        raw_logs.append(entry)
+                        if len(raw_logs) >= needed:
+                            break
+                current = seg_end + 1
+
+            start_idx = (page_num - 1) * page_size
+            end_idx = start_idx + page_size
+            logs = [self._map_log(entry) for entry in raw_logs[start_idx:end_idx] if isinstance(entry, dict)]
+        else:
+            start, end = self._normalize_block_range(from_block, to_block)
+            topic_params = self._normalize_topics(topics)
+
+            payload = self.client.get_logs(
+                normalized_address, start, end, topic_params, page_num, page_size
+            )
+            result = self._extract_result_list(payload, require_non_empty=False)
+            logs = [self._map_log(entry) for entry in result if isinstance(entry, dict)]
 
         return {
             "address": normalized_address,
@@ -303,7 +360,14 @@ class ContractService:
         normalized_slot = self._normalize_slot(slot)
         tag = self._normalize_block_tag(block_tag)
 
-        word = self._read_storage_word(normalized_address, normalized_slot, tag)
+        allow_default_rpc = network is None
+        word = self._read_storage_word(
+            normalized_address,
+            normalized_slot,
+            tag,
+            chain_id=chain_id,
+            allow_default_rpc=allow_default_rpc,
+        )
 
         return {
             "address": normalized_address,
@@ -319,11 +383,22 @@ class ContractService:
         self.client.chain_id = chain_id
         normalized_hash = self._normalize_tx_hash(tx_hash)
 
-        tx_payload = self.client.get_transaction(normalized_hash)
-        tx_result = self._extract_proxy_result(tx_payload, allow_none=True)
+        allow_default_rpc = network is None
+        rpc = self._get_rpc_client(chain_id, allow_default_rpc)
+        if rpc:
+            tx_result = rpc.call("eth_getTransactionByHash", [normalized_hash])
+            if tx_result is not None and not isinstance(tx_result, dict):
+                raise ValueError("RPC error: eth_getTransactionByHash returned unexpected result.")
 
-        receipt_payload = self.client.get_transaction_receipt(normalized_hash)
-        receipt_result = self._extract_proxy_result(receipt_payload, allow_none=True)
+            receipt_result = rpc.call("eth_getTransactionReceipt", [normalized_hash])
+            if receipt_result is not None and not isinstance(receipt_result, dict):
+                raise ValueError("RPC error: eth_getTransactionReceipt returned unexpected result.")
+        else:
+            tx_payload = self.client.get_transaction(normalized_hash)
+            tx_result = self._extract_proxy_result(tx_payload, allow_none=True)
+
+            receipt_payload = self.client.get_transaction_receipt(normalized_hash)
+            receipt_result = self._extract_proxy_result(receipt_payload, allow_none=True)
 
         tx_obj = self._map_transaction_detail(tx_result) if tx_result else None
         receipt_obj = self._map_receipt(receipt_result) if receipt_result else None
@@ -351,10 +426,15 @@ class ContractService:
         if tx_hashes_only:
             include_full_txs = False
 
-        payload = self.client.get_block_by_number(tag, include_full_txs)
-        result = self._extract_proxy_result(payload)
+        allow_default_rpc = network is None
+        rpc = self._get_rpc_client(chain_id, allow_default_rpc)
+        if rpc:
+            result = rpc.call("eth_getBlockByNumber", [tag, include_full_txs])
+        else:
+            payload = self.client.get_block_by_number(tag, include_full_txs)
+            result = self._extract_proxy_result(payload)
         if not isinstance(result, dict):
-            raise ValueError("Unexpected block response from Etherscan.")
+            raise ValueError("Unexpected block response.")
 
         block_obj = self._map_block(result, force_hashes_only=tx_hashes_only)
         return {
@@ -410,8 +490,19 @@ class ContractService:
         )
         tag = self._normalize_block_tag(block_tag)
 
-        payload = self.client.call(normalized_address, normalized_data, tag)
-        result = self._extract_proxy_result(payload)
+        allow_default_rpc = network is None
+        rpc = self._get_rpc_client(chain_id, allow_default_rpc)
+        if rpc:
+            raw_result = rpc.call(
+                "eth_call",
+                [{"to": normalized_address, "data": normalized_data}, tag],
+            )
+            if not isinstance(raw_result, str):
+                raise ValueError("RPC error: eth_call returned unexpected result.")
+            result = self._normalize_hex_string(raw_result, "result")
+        else:
+            payload = self.client.call(normalized_address, normalized_data, tag)
+            result = self._extract_proxy_result(payload)
         decoded = self._decode_call_result(result, func_meta, decimals)
 
         response: Dict[str, Any] = {
@@ -640,6 +731,29 @@ class ContractService:
         network_label, chain_id = self._resolve_network_and_chain(network)
         self.client.chain_id = chain_id
         return normalized_address, network_label, chain_id
+
+    def _rpc_url_for(self, chain_id: str, allow_default: bool) -> Optional[str]:
+        url = self.config.rpc_urls.get(str(chain_id))
+        if url:
+            return url
+        if allow_default and self.config.rpc_url_default:
+            return self.config.rpc_url_default
+        return None
+
+    def _get_rpc_client(self, chain_id: str, allow_default: bool) -> Optional[RpcClient]:
+        url = self._rpc_url_for(chain_id, allow_default)
+        if not url:
+            return None
+        client = self._rpc_clients.get(url)
+        if client is None:
+            client = RpcClient(
+                rpc_url=url,
+                timeout=self.config.request_timeout,
+                max_retries=self.config.max_retries,
+                backoff_seconds=self.config.backoff_seconds,
+            )
+            self._rpc_clients[url] = client
+        return client
 
     def _prepare_call_data(
         self,
@@ -1632,6 +1746,25 @@ class ContractService:
             params[f"topic{idx}"] = self._normalize_hex_string(topic, f"topic{idx}")
         return params
 
+    def _normalize_topics_list(
+        self, topics: Optional[Sequence[Optional[str]]]
+    ) -> Optional[List[Optional[str]]]:
+        if not topics:
+            return None
+        if len(topics) > 4:
+            raise ValueError("At most 4 topics are supported.")
+
+        normalized: List[Optional[str]] = []
+        for idx, topic in enumerate(topics):
+            if topic is None or topic == "":
+                normalized.append(None)
+                continue
+            normalized.append(self._normalize_hex_string(topic, f"topic{idx}"))
+
+        while normalized and normalized[-1] is None:
+            normalized.pop()
+        return normalized or None
+
     def _normalize_slot(self, slot: str) -> str:
         return self._normalize_hex_string(slot, "slot", pad_to=64)
 
@@ -2118,7 +2251,22 @@ class ContractService:
             raise ValueError("Encoded value exceeds 32 bytes.")
         return b.rjust(32, b"\x00")
 
-    def _read_storage_word(self, address: str, slot: str, tag: str = "latest") -> str:
+    def _read_storage_word(
+        self,
+        address: str,
+        slot: str,
+        tag: str,
+        *,
+        chain_id: str,
+        allow_default_rpc: bool,
+    ) -> str:
+        rpc = self._get_rpc_client(chain_id, allow_default_rpc)
+        if rpc:
+            result = rpc.call("eth_getStorageAt", [address, slot, tag])
+            if not isinstance(result, str):
+                raise ValueError("RPC error: eth_getStorageAt returned unexpected result.")
+            return self._normalize_hex_string(result, "storage_word", pad_to=64)
+
         payload = self.client.get_storage_at(address, slot, tag)
         return self._extract_proxy_result(payload)
 
