@@ -138,26 +138,131 @@ class ContractService:
         if cached:
             return cached
 
-        payload = self.client.get_contract_creation(normalized_address)
-        result = self._extract_result_list(payload, require_non_empty=True)
-        entry = result[0]
+        allow_default_rpc = network is None
+        rpc = self._get_rpc_client(chain_id, allow_default_rpc)
 
-        creator = entry.get("contractCreator") or entry.get("ContractCreator") or ""
-        tx_hash = entry.get("txHash") or entry.get("TxHash") or ""
-        block_number = entry.get("blockNumber") or entry.get("BlockNumber") or ""
-        timestamp = entry.get("timeStamp") or entry.get("timestamp")
+        try:
+            payload = self.client.get_contract_creation(normalized_address)
+            result = self._extract_result_list(payload, require_non_empty=True)
+            entry = result[0]
 
-        data = {
-            "address": normalized_address,
+            creator = entry.get("contractCreator") or entry.get("ContractCreator") or ""
+            tx_hash = entry.get("txHash") or entry.get("TxHash") or ""
+            block_number = entry.get("blockNumber") or entry.get("BlockNumber") or ""
+            timestamp = entry.get("timeStamp") or entry.get("timestamp")
+
+            data = {
+                "address": normalized_address,
+                "network": network_label,
+                "chain_id": chain_id,
+                "creator": str(creator).lower() if creator else "",
+                "tx_hash": str(tx_hash).lower() if tx_hash else "",
+                "block_number": str(block_number) if block_number is not None else "",
+                "timestamp": str(timestamp) if timestamp is not None else None,
+                "source": "etherscan",
+                "complete": bool(creator and tx_hash),
+            }
+            self.creation_cache.set(normalized_address, chain_id, data)
+            return data
+        except Exception as exc:
+            if not rpc:
+                raise ValueError(
+                    f"{exc} "
+                    f"(RPC fallback unavailable; set RPC_URL_{chain_id} or RPC_{chain_id} "
+                    "to enable best-effort creation lookup.)"
+                ) from exc
+
+            try:
+                data = self._get_contract_creation_via_rpc(normalized_address, network_label, chain_id, rpc)
+            except Exception as rpc_exc:
+                raise ValueError(f"{exc} (RPC fallback failed: {rpc_exc})") from rpc_exc
+
+            self.creation_cache.set(normalized_address, chain_id, data)
+            return data
+
+    def _get_contract_creation_via_rpc(
+        self,
+        address: str,
+        network_label: str,
+        chain_id: str,
+        rpc: RpcClient,
+    ) -> Dict[str, Any]:
+        code_latest = rpc.call("eth_getCode", [address, "latest"])
+        if not isinstance(code_latest, str):
+            raise ValueError("RPC error: eth_getCode returned unexpected result.")
+        if code_latest.lower() in {"0x", "0x0"}:
+            raise ValueError("RPC error: address has no contract code at latest.")
+
+        latest_block = rpc.get_block_number()
+
+        def has_code(block_number: int) -> bool:
+            try:
+                code = rpc.call("eth_getCode", [address, hex(block_number)])
+            except Exception as exc:
+                raise ValueError(
+                    "RPC error: failed to query historical contract code; an archive/full-history node may be required."
+                ) from exc
+            if not isinstance(code, str):
+                raise ValueError("RPC error: eth_getCode returned unexpected result.")
+            return code.lower() not in {"0x", "0x0"}
+
+        lo = 0
+        hi = latest_block
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if has_code(mid):
+                hi = mid
+            else:
+                lo = mid + 1
+
+        deployment_block = lo
+
+        block = rpc.call("eth_getBlockByNumber", [hex(deployment_block), True])
+        if not isinstance(block, dict):
+            raise ValueError("RPC error: eth_getBlockByNumber returned unexpected result.")
+
+        timestamp_hex = block.get("timestamp")
+        timestamp: Optional[str] = None
+        if isinstance(timestamp_hex, str) and timestamp_hex:
+            try:
+                timestamp = str(int(timestamp_hex, 16))
+            except Exception as exc:
+                raise ValueError("RPC error: block timestamp is not a valid hex value.") from exc
+
+        creator = ""
+        tx_hash = ""
+
+        txs = block.get("transactions")
+        if isinstance(txs, list):
+            for tx in txs:
+                if not isinstance(tx, dict):
+                    continue
+                if tx.get("to") is not None:
+                    continue
+                tx_hash_candidate = tx.get("hash")
+                if not isinstance(tx_hash_candidate, str) or not tx_hash_candidate:
+                    continue
+                receipt = rpc.call("eth_getTransactionReceipt", [tx_hash_candidate])
+                if not isinstance(receipt, dict):
+                    continue
+                created = receipt.get("contractAddress")
+                if isinstance(created, str) and created.lower() == address.lower():
+                    tx_hash = tx_hash_candidate.lower()
+                    creator_candidate = tx.get("from")
+                    creator = str(creator_candidate).lower() if creator_candidate else ""
+                    break
+
+        return {
+            "address": address,
             "network": network_label,
             "chain_id": chain_id,
             "creator": creator,
             "tx_hash": tx_hash,
-            "block_number": block_number,
+            "block_number": str(deployment_block),
             "timestamp": timestamp,
+            "source": "rpc",
+            "complete": bool(creator and tx_hash),
         }
-        self.creation_cache.set(normalized_address, chain_id, data)
-        return data
 
     def detect_proxy(self, address: str, network: Optional[str] = None) -> Dict[str, Any]:
         normalized_address, network_label, chain_id = self._prepare_context(address, network)

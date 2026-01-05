@@ -28,7 +28,7 @@ Etherscan MCP：单仓 Python 项目。用户提供 `ETHERSCAN_API_KEY`，通过
      ```  
   2) 工具：  
      - `fetch_contract(address, network?, inline_limit?, force_inline?)`：ABI/源码/编译器信息，超限时仅摘要并给出 `source_omitted`；未验证合约会明确报错提示 ABI 不可用。  
-     - `get_contract_creation(address, network?)`：创建者、创建交易哈希、块高。  
+     - `get_contract_creation(address, network?)`：优先 Etherscan `getcontractcreation`；失败且配置了 `RPC_URL_<chainid>`/`RPC_<chainid>` 时回退 RPC best-effort（返回新增字段 `source`/`complete`；internal create 场景可能 `complete=false`）。  
      - `detect_proxy(address, network?)`：EIP-1967 implementation/admin 槽探测。  
      - `list_chains(include_degraded?)`：列出 Etherscan V2 `/v2/chainlist` 返回的链清单。  
      - `resolve_chain(network)`：解析 network 字符串/别名为 `chain_id`（建议优先传数字 chainid 以避免歧义）。  
@@ -57,4 +57,5 @@ Etherscan MCP：单仓 Python 项目。用户提供 `ETHERSCAN_API_KEY`，通过
   - `CHAINLIST_TTL_SECONDS`：链清单缓存 TTL（默认 3600 秒）
   - `RPC_URL_<chainid>` / `RPC_<chainid>`：为指定链配置 JSON-RPC HTTP 端点（例如 `RPC_URL_56`），配置后读链类工具优先走 RPC（BSC 等链推荐配置以避免 Etherscan proxy 链覆盖限制）
   - `RPC_URL`：默认链的 JSON-RPC 端点（仅当调用未显式传 `network` 时生效）
+- 提示：部分链的 `getcontractcreation` 可能返回 `NOTOK`（例如 BSC）；建议配置对应的 `RPC_URL_<chainid>` 以启用 `get_contract_creation` 的 RPC 回退。
 - 安全策略：默认 `NETWORK` 无法解析且未设置 `CHAIN_ID` 时会明确报错，避免误用主网；可用 `list-chains/resolve-chain`（或 MCP 的 `list_chains/resolve_chain`）先查后用。
