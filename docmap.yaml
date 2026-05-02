@@ -1,3 +1,0 @@
-repos:
-  - name: etherscan-mcp
-    path: ./src/etherscan-mcp
