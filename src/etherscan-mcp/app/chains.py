@@ -64,6 +64,7 @@ class ChainRegistry:
             "ethereum": "ethereum mainnet",
             "mainnet": "ethereum mainnet",
             "bsc": "56",
+            "base": "8453",
             "arb": "arbitrum one",
             "arbitrum": "arbitrum one",
             "arb1": "arbitrum one",

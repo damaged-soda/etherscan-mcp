@@ -1,6 +1,6 @@
 # 项目概览（SOT）
 
-Last Updated: 2026-01-05
+Last Updated: 2026-05-02
 
 ## 项目是什么
 Etherscan MCP：单仓 Python 项目。用户提供 `ETHERSCAN_API_KEY`，通过 CLI/MCP 拉取并缓存已验证合约的 ABI、源码和基本元数据（Etherscan API V2），辅助离线分析，不涉及部署或链上写操作。读链能力（`eth_call`/`eth_getStorageAt`/`eth_getLogs`/区块/交易等）在配置 `RPC_URL_<chainid>` 时走真实 EVM JSON-RPC；未配置时保持原行为，继续通过 Etherscan `module=proxy`。
@@ -24,6 +24,7 @@ Etherscan MCP：单仓 Python 项目。用户提供 `ETHERSCAN_API_KEY`，通过
      codex mcp add etherscan-mcp \
        --env ETHERSCAN_API_KEY=<your-api-key> \
        --env RPC_URL_56=<your-bsc-rpc-https-endpoint> \
+       --env RPC_URL_8453=<your-base-rpc-https-endpoint> \
        -- bash -lc "cd `pwd`/src/etherscan-mcp && python -m app.mcp_server --transport stdio"
      ```  
   2) 工具：  
@@ -50,12 +51,13 @@ Etherscan MCP：单仓 Python 项目。用户提供 `ETHERSCAN_API_KEY`，通过
 - network 入参支持（任意需要 network 的 CLI/MCP 参数一致）：
   - 数字 chainid（十进制字符串）：如 `"42161"`（最稳定，始终可用）
   - 链名/近似链名：基于 Etherscan V2 `GET /v2/chainlist` 动态解析
-  - 常用简称：通过轻量别名层映射到动态清单（如 `arb`、`arb-sepolia`、`bsc`→`56`）
+  - 常用简称：通过轻量别名层映射到动态清单（如 `arb`、`arb-sepolia`、`bsc`→`56`、`base`→`8453`）
 - 配置：
   - `CHAIN_ID`：硬覆盖默认链（用于 network 未显式传入的场景）
   - `ETHERSCAN_CHAINLIST_URL`：链清单端点（默认 `https://api.etherscan.io/v2/chainlist`）
   - `CHAINLIST_TTL_SECONDS`：链清单缓存 TTL（默认 3600 秒）
-  - `RPC_URL_<chainid>` / `RPC_<chainid>`：为指定链配置 JSON-RPC HTTP 端点（例如 `RPC_URL_56`），配置后读链类工具优先走 RPC（BSC 等链推荐配置以避免 Etherscan proxy 链覆盖限制）
+  - `RPC_URL_<chainid>` / `RPC_<chainid>`：为指定链配置 JSON-RPC HTTP 端点（例如 `RPC_URL_56`、`RPC_URL_8453`），配置后读链类工具优先走 RPC（BSC、Base 等链推荐配置以避免 Etherscan free tier 在 `module=proxy` 上的 `Free API access is not supported for this chain` 限制）
   - `RPC_URL`：默认链的 JSON-RPC 端点（仅当调用未显式传 `network` 时生效）
 - 提示：部分链的 `getcontractcreation` 可能返回 `NOTOK`（例如 BSC）；建议配置对应的 `RPC_URL_<chainid>` 以启用 `get_contract_creation` 的 RPC 回退。
+- 已知限制：`list_transactions` / `list_token_transfers` 对应 Etherscan 的 `txlist`/`tokentx` indexed 端点，原生 JSON-RPC 没有等价能力；在 Base 等链的 free tier 下可能直接返回空，目前没有 fallback（如需补齐需引入 BaseScan native key 或第三方索引服务，单独立项）。
 - 安全策略：默认 `NETWORK` 无法解析且未设置 `CHAIN_ID` 时会明确报错，避免误用主网；可用 `list-chains/resolve-chain`（或 MCP 的 `list_chains/resolve_chain`）先查后用。
