@@ -230,7 +230,10 @@ def get_transaction(tx_hash: str, network: Optional[str] = None) -> dict:
         "Lightweight per-tx digest in one call: tx meta + gas cost + unique log addresses "
         "annotated with verified ContractName, plus decoded ERC20 Transfer flow with token "
         "symbol/decimals (best-effort). decode_transfers/annotate_contracts default true; "
-        "set false to skip the corresponding lookups."
+        "set false to skip the corresponding lookups. Set compact=true for an arbitrage-"
+        "oriented digest: gas split into execution_fee/l1_fee/total_fee (OP stack L2), "
+        "ERC20 flow aggregated into net_token_flow_by_address instead of a per-log dump, "
+        "plus heuristic route_hints (Pendle / Kyber / 1inch / UniV3 / PT/YT/SY)."
     ),
 )
 def get_transaction_summary(
@@ -238,9 +241,12 @@ def get_transaction_summary(
     network: Optional[str] = None,
     decode_transfers: bool = True,
     annotate_contracts: bool = True,
+    compact: bool = False,
 ) -> dict:
     svc = _get_service()
-    return svc.get_transaction_summary(tx_hash, network, decode_transfers, annotate_contracts)
+    return svc.get_transaction_summary(
+        tx_hash, network, decode_transfers, annotate_contracts, compact
+    )
 
 
 @server.tool(
