@@ -281,21 +281,11 @@ def list_chains(include_degraded: bool = True) -> dict:
 @server.tool(
     name="resolve_chain",
     title="Resolve Network To Chain ID",
-    description="Resolve a network string (name/alias) to chainid via chainlist. Returns rpc_configured + caveats so plan/RPC limits surface up front. Prefer numeric chainid for precision.",
+    description="Resolve a network string (name/alias) to chainid via chainlist. Returns rpc_configured + per-tool caveats so Etherscan plan / RPC limits (e.g. Base/BSC free tier) surface up front. Prefer numeric chainid for precision.",
 )
 def resolve_chain(network: str) -> dict:
     svc = _get_service()
     return svc.resolve_chain(network)
-
-
-@server.tool(
-    name="chain_capabilities",
-    title="Chain Capabilities Snapshot",
-    description="Per-chain capability snapshot: chain meta + RPC config state + per-tool caveats. Use this before running multi-step workflows on chains like Base/BSC to know which tools will be blocked by Etherscan free tier and which need RPC_URL_<chainid> set.",
-)
-def chain_capabilities(network: str) -> dict:
-    svc = _get_service()
-    return svc.chain_capabilities(network)
 
 
 @server.tool(

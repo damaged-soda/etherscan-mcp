@@ -1590,34 +1590,13 @@ class ContractService:
     def list_chains_with_caveats(self, include_degraded: bool = True) -> Dict[str, Any]:
         """
         List chains and tag each row with `has_caveats` so callers can spot
-        chains with known plan/RPC limits at a glance. Detail is on
-        `chain_capabilities(network)`.
+        chains with known plan/RPC limits at a glance. Caveat detail lives on
+        `resolve_chain(network)`.
         """
         rows = self.chains.list_chains(include_degraded=include_degraded)
         for row in rows:
             row["has_caveats"] = has_caveats(row.get("chainid", ""))
         return {"total": len(rows), "result": rows}
-
-    def chain_capabilities(self, network: str) -> Dict[str, Any]:
-        """
-        Per-chain capability snapshot: chain meta + RPC config state +
-        per-tool caveats (with `status_effective` accounting for RPC fallback).
-        Tools not listed in `caveats` are expected to work as-is.
-        """
-        info = self.resolve_chain(network)
-        return {
-            "network": info["network"],
-            "chain_id": info["chain_id"],
-            "chain_meta": info["meta"],
-            "rpc_configured": info["rpc_configured"],
-            "rpc_env_var": f"RPC_URL_{info['chain_id']}",
-            "caveats": info["caveats"],
-            "note": (
-                "Tools not in `caveats` are expected to work via the default "
-                "Etherscan / RPC routing. `status_effective=ok` means a "
-                "configured RPC_URL_<chainid> mitigates the caveat."
-            ),
-        }
 
     def _resolve_network_and_chain(self, network: Optional[str]) -> Tuple[str, str]:
         if network is not None:

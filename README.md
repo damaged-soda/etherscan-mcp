@@ -33,7 +33,6 @@ python -m app get-block --block <latest|dec|0x> [--full-transactions] [--tx-hash
 python -m app get-block-time --block <latest|dec|0x>
 python -m app list-chains [--include-degraded]
 python -m app resolve-chain --network <name|alias|chainid>
-python -m app chain-capabilities --network <name|alias|chainid>
 ```
 
 源码超内联阈值（默认 20000 字符）且未强制时，`source_files` 仅返回摘要（filename/length/sha256/inline=false）并附 `source_omitted`/`source_omitted_reason`，需要原文用 `get-source-file` 分段拿。
@@ -69,7 +68,7 @@ codex mcp add etherscan-mcp \
 | 类别 | tools |
 |------|-------|
 | Contracts | `fetch_contract`、`get_source_file`、`get_contract_creation`、`detect_proxy` |
-| Chains | `list_chains`、`resolve_chain`、`chain_capabilities` |
+| Chains | `list_chains`、`resolve_chain` |
 | Transactions / Transfers / Logs | `list_transactions`、`list_token_transfers`、`query_logs` |
 | State / Calls | `get_storage_at`、`call_function`、`encode_function_data`、`keccak` |
 | Blocks / Tx | `get_block_by_number`、`get_block_time_by_number`、`get_transaction`、`get_transaction_summary` |
@@ -95,7 +94,7 @@ codex mcp add etherscan-mcp \
 
 ## 已知限制
 
-> 这些限制结构化进了 `capabilities.py`，跑任务前用 `chain_capabilities --network <chain>`（CLI）或 `chain_capabilities` MCP tool 拿一份当前链的 caveats + RPC 配置状态，不必再二手转述这一节。`resolve_chain` / `list_chains` 也会带上 `caveats` / `has_caveats`。
+> 这些限制结构化进了 `capabilities.py`，跑任务前调一次 `resolve_chain --network <chain>` 就能拿到当前链的 `caveats` + `rpc_configured`；`list_chains` 输出带 `has_caveats` 标记。不必再二手转述这一节。
 
 - **`list_transactions` / `list_token_transfers` 在部分 free tier 链上返回空**：对应 Etherscan 的 `txlist` / `tokentx` indexed 端点，原生 JSON-RPC 没有等价能力（`eth_*` 只能按 hash/block 拿，没法按 address 倒查历史）。Base 等链 free tier 直接返回空，目前没有 fallback。后续如有需要要走 BaseScan native key 或第三方索引服务（Covalent / Alchemy enhanced API），单独立项。`status=paid_tier_only`。
 - **`get_contract_creation` 在 BSC 等链可能 NOTOK**：建议配 `RPC_URL_<chainid>` 启用 RPC 二分回退；internal create 场景可能仅返回 `block_number/timestamp`（`complete=false`），且需要 archive / full-history 节点。`status=degraded`。
