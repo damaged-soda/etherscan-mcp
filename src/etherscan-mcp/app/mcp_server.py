@@ -271,23 +271,21 @@ def get_block_time_by_number(block: Any, network: Optional[str] = None) -> dict:
 @server.tool(
     name="list_chains",
     title="List Supported Chains",
-    description="List chains supported by Etherscan V2 via /v2/chainlist.",
+    description="List chains supported by Etherscan V2 via /v2/chainlist. Each row carries `has_caveats` to flag chains with known plan/RPC limits — call chain_capabilities for detail.",
 )
 def list_chains(include_degraded: bool = True) -> dict:
     svc = _get_service()
-    chains = svc.chains.list_chains(include_degraded=include_degraded)
-    return {"total": len(chains), "result": chains}
+    return svc.list_chains_with_caveats(include_degraded=include_degraded)
 
 
 @server.tool(
     name="resolve_chain",
     title="Resolve Network To Chain ID",
-    description="Resolve a network string (name/alias) to chainid via chainlist. Prefer numeric chainid for precision.",
+    description="Resolve a network string (name/alias) to chainid via chainlist. Returns rpc_configured + per-tool caveats so Etherscan plan / RPC limits (e.g. Base/BSC free tier) surface up front. Prefer numeric chainid for precision.",
 )
 def resolve_chain(network: str) -> dict:
     svc = _get_service()
-    label, cid, meta = svc.chains.resolve(network)
-    return {"input": network, "network": label, "chain_id": cid, "meta": meta}
+    return svc.resolve_chain(network)
 
 
 @server.tool(

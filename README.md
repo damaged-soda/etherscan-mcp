@@ -55,6 +55,7 @@ codex mcp add etherscan-mcp \
 
 - `config.py` —— 读取环境变量，封装为配置对象；保留少量静态 `NETWORK_CHAIN_ID_MAP`（mainnet/bsc/sepolia 等）作为 chainlist 不可用时的兜底。
 - `chains.py` —— 基于 Etherscan V2 `/v2/chainlist` 的链清单模块，进程内 TTL 缓存；提供 `list_chains()` 与 `resolve(network)`（支持数字 chainid、链名模糊、别名 `arb`/`bsc`/`base`）。
+- `capabilities.py` —— 手维护的 per-chain caveat 矩阵（`chainid → [{tool, status, reason, workaround}]`），把 README「已知限制」结构化暴露出来。`status` 枚举：`requires_rpc_url` / `paid_tier_only` / `degraded` / `unsupported`；service 层在输出时会附 `status_effective`，`requires_rpc_url` 在配了 `RPC_URL_<chainid>` 时降级为 `ok`。
 - `etherscan_client.py` —— requests 封装的 REST client，对源码 / 创建信息 / 交易 / 转移 / 日志 / `module=proxy` 做有限重试与退避，识别限流文案（`rate limit` / `Max calls per sec` / `Too Many Requests`）。
 - `rpc_client.py` —— JSON-RPC（HTTP POST）封装；`eth_call` / `eth_getStorageAt` / `eth_getLogs` / `eth_getBlockByNumber` / `eth_getTransactionByHash` / `eth_getTransactionReceipt` / `eth_blockNumber` 等只读调用。
 - `cache.py` —— 纯内存缓存（进程级，不落盘），按 address+chainid 键控；contract 详情与 creation 用不同命名空间。
@@ -93,9 +94,12 @@ codex mcp add etherscan-mcp \
 
 ## 已知限制
 
-- **`list_transactions` / `list_token_transfers` 在部分 free tier 链上返回空**：对应 Etherscan 的 `txlist` / `tokentx` indexed 端点，原生 JSON-RPC 没有等价能力（`eth_*` 只能按 hash/block 拿，没法按 address 倒查历史）。Base 等链 free tier 直接返回空，目前没有 fallback。后续如有需要要走 BaseScan native key 或第三方索引服务（Covalent / Alchemy enhanced API），单独立项。
-- **`get_contract_creation` 在 BSC 等链可能 NOTOK**：建议配 `RPC_URL_<chainid>` 启用 RPC 二分回退；internal create 场景可能仅返回 `block_number/timestamp`（`complete=false`），且需要 archive / full-history 节点。
-- **`module=proxy` 在 Base / BSC 等链 free tier 受限**：会报 `Free API access is not supported for this chain`，配 `RPC_URL_<chainid>` 绕开。
+> 这些限制结构化进了 `capabilities.py`，跑任务前调一次 `resolve_chain --network <chain>` 就能拿到当前链的 `caveats` + `rpc_configured`；`list_chains` 输出带 `has_caveats` 标记。不必再二手转述这一节。
+
+- **`list_transactions` / `list_token_transfers` 在部分 free tier 链上返回空**：对应 Etherscan 的 `txlist` / `tokentx` indexed 端点，原生 JSON-RPC 没有等价能力（`eth_*` 只能按 hash/block 拿，没法按 address 倒查历史）。Base 等链 free tier 直接返回空，目前没有 fallback。后续如有需要要走 BaseScan native key 或第三方索引服务（Covalent / Alchemy enhanced API），单独立项。`status=paid_tier_only`。
+- **`get_contract_creation` 在 BSC 等链可能 NOTOK**：建议配 `RPC_URL_<chainid>` 启用 RPC 二分回退；internal create 场景可能仅返回 `block_number/timestamp`（`complete=false`），且需要 archive / full-history 节点。`status=degraded`。
+- **`module=proxy` 在 Base / BSC 等链 free tier 受限**：会报 `Free API access is not supported for this chain`，配 `RPC_URL_<chainid>` 绕开。`status=requires_rpc_url`，配上 RPC 后 `status_effective` 自动降级为 `ok`。
+- **新链 / 未列入 caveat 矩阵的链**（HyperEVM、Plasma 等）：默认按"无 caveat"处理。先用 `list_chains` 确认 Etherscan V2 是否覆盖（status=1 为正常），跑任务踩坑后回头补 `capabilities.py`。
 
 ## 配置（环境变量）
 
