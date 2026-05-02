@@ -6,7 +6,7 @@ import hashlib
 from decimal import Decimal, getcontext
 
 from .cache import ContractCache
-from .capabilities import caveats_for, has_caveats
+from .capabilities import build_route_hints, caveats_for, has_caveats
 from .chains import ChainRegistry
 from .config import Config, resolve_chain_id
 from .etherscan_client import EtherscanClient
@@ -525,13 +525,20 @@ class ContractService:
         network: Optional[str] = None,
         decode_transfers: bool = True,
         annotate_contracts: bool = True,
+        compact: bool = False,
     ) -> Dict[str, Any]:
         """
         Lightweight per-tx digest: tx meta + gas cost + unique log addresses
         annotated with verified ContractName, plus decoded ERC20 Transfer flow
         with token symbol/decimals (best-effort, swallows lookup failures).
-        Protocol-specific labeling (Pendle / Router / etc) is intentionally
-        out of scope — use ContractName plus caller-side cross-reference.
+
+        compact=False (default): legacy schema with `addresses` + per-log
+        `erc20_transfers` array.
+
+        compact=True: arbitrage-oriented digest — `gas` nested object with
+        execution_fee / l1_fee / total_fee split, `contracts` + `tokens`
+        annotation lists, `net_token_flow_by_address` aggregated ERC20 deltas,
+        heuristic `route_hints`, and `counts`. Drops the per-log transfer dump.
         """
         tx_data = self.get_transaction(tx_hash, network)
         normalized_hash = tx_data.get("tx_hash")
@@ -616,9 +623,13 @@ class ContractService:
 
         gas_used = receipt.get("gas_used")
         effective_gas_price = receipt.get("effective_gas_price")
-        gas_cost_wei = None
+        execution_fee_wei = None
         if isinstance(gas_used, int) and isinstance(effective_gas_price, int):
-            gas_cost_wei = gas_used * effective_gas_price
+            execution_fee_wei = gas_used * effective_gas_price
+        l1_fee_wei = receipt.get("l1_fee") if isinstance(receipt.get("l1_fee"), int) else None
+        total_fee_wei = None
+        if isinstance(execution_fee_wei, int):
+            total_fee_wei = execution_fee_wei + (l1_fee_wei or 0)
 
         status_int = receipt.get("status")
         if status_int == 1:
@@ -630,6 +641,32 @@ class ContractService:
 
         value_wei = tx.get("value_int")
         value_eth = self._format_scaled_int(value_wei, 18) if isinstance(value_wei, int) else None
+
+        if compact:
+            return self._build_tx_summary_compact(
+                normalized_hash=normalized_hash,
+                network_label=network_label,
+                chain_id=chain_id,
+                status_label=status_label,
+                block_number=receipt.get("block_number"),
+                tx_from=tx.get("from"),
+                tx_to=tx_to,
+                contract_names=contract_names,
+                token_metadata=token_metadata,
+                addresses_to_annotate=addresses_to_annotate,
+                seen_token=seen_token,
+                erc20_transfers=erc20_transfers,
+                value_wei=value_wei,
+                value_eth=value_eth,
+                gas_used=gas_used,
+                effective_gas_price=effective_gas_price,
+                execution_fee_wei=execution_fee_wei,
+                l1_fee_wei=l1_fee_wei,
+                total_fee_wei=total_fee_wei,
+                logs=logs,
+                log_addresses=log_addresses,
+                decode_transfers=decode_transfers,
+            )
 
         return {
             "tx_hash": normalized_hash,
@@ -644,13 +681,152 @@ class ContractService:
             "value_eth": value_eth,
             "gas_used": gas_used,
             "effective_gas_price_wei": effective_gas_price,
-            "gas_cost_wei": gas_cost_wei,
-            "gas_cost_eth": self._format_scaled_int(gas_cost_wei, 18) if isinstance(gas_cost_wei, int) else None,
+            "gas_cost_wei": execution_fee_wei,
+            "gas_cost_eth": self._format_scaled_int(execution_fee_wei, 18) if isinstance(execution_fee_wei, int) else None,
             "log_count": len(logs),
             "addresses": addresses_summary,
             "erc20_transfers": erc20_transfers,
             "decode_transfers": bool(decode_transfers),
             "annotate_contracts": bool(annotate_contracts),
+        }
+
+    def _build_tx_summary_compact(
+        self,
+        *,
+        normalized_hash: Optional[str],
+        network_label: Optional[str],
+        chain_id: str,
+        status_label: Optional[str],
+        block_number: Optional[int],
+        tx_from: Optional[str],
+        tx_to: Optional[str],
+        contract_names: Dict[str, Optional[str]],
+        token_metadata: Dict[str, Dict[str, Any]],
+        addresses_to_annotate: set,
+        seen_token: set,
+        erc20_transfers: List[Dict[str, Any]],
+        value_wei: Optional[int],
+        value_eth: Optional[str],
+        gas_used: Optional[int],
+        effective_gas_price: Optional[int],
+        execution_fee_wei: Optional[int],
+        l1_fee_wei: Optional[int],
+        total_fee_wei: Optional[int],
+        logs: List[Any],
+        log_addresses: List[str],
+        decode_transfers: bool,
+    ) -> Dict[str, Any]:
+        # contracts: only addresses that have a verified name (skip raw EOAs / unverified).
+        contracts: List[Dict[str, Any]] = []
+        for addr in sorted(addresses_to_annotate):
+            name = contract_names.get(addr)
+            if name:
+                contracts.append({"address": addr, "name": name})
+
+        tokens: List[Dict[str, Any]] = []
+        for addr in sorted(seen_token):
+            meta = token_metadata.get(addr) or {}
+            tokens.append(
+                {
+                    "address": addr,
+                    "symbol": meta.get("symbol"),
+                    "decimals": meta.get("decimals"),
+                }
+            )
+
+        # protocols: deduped contract_name list, keeps short tx-shape signature.
+        seen_proto: set = set()
+        protocols: List[str] = []
+        for c in contracts:
+            n = c["name"]
+            if n in seen_proto:
+                continue
+            seen_proto.add(n)
+            protocols.append(n)
+
+        # Net ERC20 flow per (address, token): sum of signed amounts. ERC20
+        # Transfer mints/burns show up as flows from/to 0x000...0; we keep them
+        # so callers see wrap/unwrap explicitly.
+        flow_int: Dict[Tuple[str, str], int] = {}
+        for tr in erc20_transfers:
+            token_addr = tr.get("token_address")
+            amount = tr.get("amount_int")
+            from_addr = tr.get("from")
+            to_addr = tr.get("to")
+            if not isinstance(token_addr, str) or not isinstance(amount, int):
+                continue
+            if isinstance(from_addr, str):
+                key = (from_addr, token_addr)
+                flow_int[key] = flow_int.get(key, 0) - amount
+            if isinstance(to_addr, str):
+                key = (to_addr, token_addr)
+                flow_int[key] = flow_int.get(key, 0) + amount
+
+        net_flow: List[Dict[str, Any]] = []
+        for (addr, token_addr), signed_amount in flow_int.items():
+            if signed_amount == 0:
+                continue
+            meta = token_metadata.get(token_addr) or {}
+            decimals = meta.get("decimals")
+            if isinstance(decimals, int) and decimals >= 0:
+                magnitude = self._format_scaled_int(abs(signed_amount), decimals)
+                amount_str = ("-" if signed_amount < 0 else "+") + (magnitude or "0")
+            else:
+                amount_str = ("-" if signed_amount < 0 else "+") + str(abs(signed_amount))
+            net_flow.append(
+                {
+                    "address": addr,
+                    "token_address": token_addr,
+                    "token_symbol": meta.get("symbol"),
+                    "amount": amount_str,
+                    "amount_int": signed_amount,
+                }
+            )
+        # Stable order: by address, then token, with larger |amount| first.
+        net_flow.sort(key=lambda r: (r["address"], -abs(r["amount_int"]), r["token_address"]))
+
+        contract_name_list = [c["name"] for c in contracts]
+        token_symbol_list = [t["symbol"] or "" for t in tokens]
+        route_hints = build_route_hints(contract_name_list, token_symbol_list)
+
+        gas: Dict[str, Any] = {
+            "gas_used": gas_used,
+            "effective_gas_price_wei": effective_gas_price,
+            "execution_fee_wei": execution_fee_wei,
+            "execution_fee_eth": self._format_scaled_int(execution_fee_wei, 18)
+            if isinstance(execution_fee_wei, int)
+            else None,
+            "l1_fee_wei": l1_fee_wei,
+            "l1_fee_eth": self._format_scaled_int(l1_fee_wei, 18) if isinstance(l1_fee_wei, int) else None,
+            "total_fee_wei": total_fee_wei,
+            "total_fee_eth": self._format_scaled_int(total_fee_wei, 18)
+            if isinstance(total_fee_wei, int)
+            else None,
+        }
+
+        return {
+            "tx_hash": normalized_hash,
+            "network": network_label,
+            "chain_id": chain_id,
+            "status": status_label,
+            "block_number": block_number,
+            "from": tx_from,
+            "to": tx_to,
+            "to_contract_name": contract_names.get((tx_to or "").lower()) if tx_to else None,
+            "value_wei": value_wei,
+            "value_eth": value_eth,
+            "gas": gas,
+            "protocols": protocols,
+            "contracts": contracts,
+            "tokens": tokens,
+            "net_token_flow_by_address": net_flow,
+            "route_hints": route_hints,
+            "counts": {
+                "logs": len(logs),
+                "unique_log_addresses": len(log_addresses),
+                "erc20_transfers": len(erc20_transfers) if decode_transfers else 0,
+            },
+            "compact": True,
         }
 
     def get_block_by_number(
@@ -2605,6 +2781,11 @@ class ContractService:
             "cumulative_gas_used": hx("cumulativeGasUsed"),
             "gas_used": hx("gasUsed"),
             "effective_gas_price": hx("effectiveGasPrice"),
+            # OP stack L2 (Base / Optimism / etc): receipt 透传 L1 data-availability cost
+            "l1_fee": hx("l1Fee"),
+            "l1_gas_used": hx("l1GasUsed"),
+            "l1_gas_price": hx("l1GasPrice"),
+            "l1_fee_scalar": receipt.get("l1FeeScalar"),
             "block_hash": receipt.get("blockHash"),
             "block_number": hx("blockNumber"),
             "transaction_hash": receipt.get("transactionHash"),

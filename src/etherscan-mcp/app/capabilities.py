@@ -91,6 +91,63 @@ CHAIN_CAVEATS: Dict[str, List[Dict[str, str]]] = {
 }
 
 
+# Heuristic rules for `get_transaction_summary` compact mode `route_hints`.
+# These are best-effort substring / prefix matches against verified contract
+# names and ERC20 symbols; callers must treat them as hints, not assertions.
+# Keep the rule set conservative — false positives here pollute every compact
+# response.
+ROUTE_HINT_RULES: List[Dict[str, Any]] = [
+    {
+        "label": "Pendle router call",
+        "any_contract_name_substr": ["PendleRouter"],
+    },
+    {
+        "label": "Touches Pendle market",
+        "any_contract_name_substr": ["PendleMarket"],
+    },
+    {
+        "label": "Kyber aggregation used",
+        "any_contract_name_substr": ["MetaAggregationRouter", "Kyber"],
+    },
+    {
+        "label": "1inch aggregation used",
+        "any_contract_name_substr": ["AggregationRouterV"],
+    },
+    {
+        "label": "Touches Uniswap V3 / CL pool",
+        "any_contract_name_substr": ["UniswapV3", "CLPool"],
+    },
+    {
+        "label": "Touches PT/YT/SY",
+        "any_token_symbol_prefix": ["PT-", "YT-", "SY-"],
+    },
+]
+
+
+def build_route_hints(
+    contract_names: List[str], token_symbols: List[str]
+) -> List[str]:
+    """Best-effort labels — see ROUTE_HINT_RULES for caveats."""
+    out: List[str] = []
+    names = [(n or "") for n in contract_names]
+    symbols_upper = [(s or "").upper() for s in token_symbols]
+    for rule in ROUTE_HINT_RULES:
+        matched = False
+        for substr in rule.get("any_contract_name_substr", []) or []:
+            if any(substr in n for n in names):
+                matched = True
+                break
+        if not matched:
+            for prefix in rule.get("any_token_symbol_prefix", []) or []:
+                pu = prefix.upper()
+                if any(s.startswith(pu) for s in symbols_upper):
+                    matched = True
+                    break
+        if matched:
+            out.append(rule["label"])
+    return out
+
+
 def has_caveats(chain_id: str) -> bool:
     """Cheap check used by list_chains to flag rows with known issues."""
     return bool(CHAIN_CAVEATS.get(str(chain_id)))
