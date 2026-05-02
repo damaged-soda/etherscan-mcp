@@ -22,10 +22,10 @@ pip install -r src/etherscan-mcp/requirements.txt
 ## 配置
 环境变量（必需及可选）：
 - `ETHERSCAN_API_KEY`（必需）：你的 Etherscan API Key。
-- `NETWORK`（可选，默认 `mainnet`）：可传数字 chainId，或链名/常用别名（例如 `bsc`），会基于 chainlist 动态解析。
+- `NETWORK`（可选，默认 `mainnet`）：可传数字 chainId，或链名/常用别名（例如 `bsc`、`base`），会基于 chainlist 动态解析。
 - `CHAIN_ID`（可选）：覆盖 network 推导的 chainId。
 - `ETHERSCAN_BASE_URL`（可选，默认 `https://api.etherscan.io/v2/api`）。
-- `RPC_URL_<chainid>`（可选，推荐）：指定某条链的 JSON-RPC HTTP 端点（例如 `RPC_URL_56` 用于 BSC 读链）。
+- `RPC_URL_<chainid>`（可选，推荐）：指定某条链的 JSON-RPC HTTP 端点（例如 `RPC_URL_56` 用于 BSC、`RPC_URL_8453` 用于 Base 读链；这两条链的 `module=proxy` 在 Etherscan free tier 下会报 `Free API access is not supported for this chain`，配 RPC 后绕开）。
 - `RPC_<chainid>`（可选）：`RPC_URL_<chainid>` 的兼容别名。
 - `RPC_URL`（可选）：默认链的 JSON-RPC 端点（仅当调用未显式传 `network` 时生效）；显式传 `network` 的场景建议用 `RPC_URL_<chainid>` 避免误绑定。
 - `REQUEST_TIMEOUT`（秒，默认 10）、`REQUEST_RETRIES`（默认 3）、`REQUEST_BACKOFF_SECONDS`（默认 0.5）。
@@ -36,9 +36,11 @@ pip install -r src/etherscan-mcp/requirements.txt
 codex mcp add etherscan-mcp \
   --env ETHERSCAN_API_KEY=<your-api-key> \
   --env RPC_URL_56=<your-bsc-rpc-https-endpoint> \
+  --env RPC_URL_8453=<your-base-rpc-https-endpoint> \
   -- bash -lc "cd `pwd`/src/etherscan-mcp && python -m app.mcp_server --transport stdio"
 ```
 
 说明：
 - ABI/源码能力（如 `fetch_contract/get_source_file`）仍使用 Etherscan V2 API。
-- 读链能力（如 `call_function/get_storage_at/query_logs/get_block_by_number/get_transaction`）在配置了对应 `RPC_URL_<chainid>` 时会走真实 JSON-RPC；未配置时保持原行为（继续走 Etherscan `module=proxy`），在 BSC 等链的 Free tier 下可能受限。
+- 读链能力（如 `call_function/get_storage_at/query_logs/get_block_by_number/get_transaction`）在配置了对应 `RPC_URL_<chainid>` 时会走真实 JSON-RPC；未配置时保持原行为（继续走 Etherscan `module=proxy`），在 BSC、Base 等链的 Free tier 下可能受限。
+- `list_transactions` / `list_token_transfers` 走 Etherscan 的 `txlist`/`tokentx` indexed 端点，没有等价 RPC 替代；在 Base 等链的 free tier 下可能直接返回空，目前没有 fallback。
