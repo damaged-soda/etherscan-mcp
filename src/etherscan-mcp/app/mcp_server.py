@@ -224,6 +224,26 @@ def get_transaction(tx_hash: str, network: Optional[str] = None) -> dict:
 
 
 @server.tool(
+    name="get_transaction_summary",
+    title="Summarize Transaction",
+    description=(
+        "Lightweight per-tx digest in one call: tx meta + gas cost + unique log addresses "
+        "annotated with verified ContractName, plus decoded ERC20 Transfer flow with token "
+        "symbol/decimals (best-effort). decode_transfers/annotate_contracts default true; "
+        "set false to skip the corresponding lookups."
+    ),
+)
+def get_transaction_summary(
+    tx_hash: str,
+    network: Optional[str] = None,
+    decode_transfers: bool = True,
+    annotate_contracts: bool = True,
+) -> dict:
+    svc = _get_service()
+    return svc.get_transaction_summary(tx_hash, network, decode_transfers, annotate_contracts)
+
+
+@server.tool(
     name="get_block_by_number",
     title="Get Block By Number",
     description="Fetch a block by number (decimal, 0x, or latest). Use full_transactions to expand tx objects or tx_hashes_only to force hashes list.",

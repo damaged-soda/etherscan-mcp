@@ -70,7 +70,7 @@ codex mcp add etherscan-mcp \
 | Chains | `list_chains`、`resolve_chain` |
 | Transactions / Transfers / Logs | `list_transactions`、`list_token_transfers`、`query_logs` |
 | State / Calls | `get_storage_at`、`call_function`、`encode_function_data`、`keccak` |
-| Blocks / Tx | `get_block_by_number`、`get_block_time_by_number`、`get_transaction` |
+| Blocks / Tx | `get_block_by_number`、`get_block_time_by_number`、`get_transaction`、`get_transaction_summary` |
 | Helpers | `convert` |
 
 ## 参数与错误约定
@@ -86,6 +86,7 @@ codex mcp add etherscan-mcp \
 - **代理感知**：`fetch_contract` 解析 Etherscan Proxy/Implementation 元数据，规范化实现地址写入 proxy cache；`call_function` ABI 选择优先实现合约（来自元数据或 EIP-1967 detect_proxy）；探测异常不缓存"非代理"，避免假阴性；缺实现 ABI 不阻断调用，仅解码受限。
 - **`convert`**：`from_unit` / `to_unit` 支持 `hex` / `dec` / `human` / `wei` / `gwei` / `eth`，`decimals` 默认 18；内部用整数 / Decimal 避免浮点丢精度；分数精度超限会报错。
 - **`get_transaction`**：优先 RPC 的 `eth_getTransactionByHash` + `eth_getTransactionReceipt`，未配 RPC 回退 Etherscan proxy；`tx_hash` 需 `0x` + 64 hex。
+- **`get_transaction_summary`**：一次性给出 tx meta + gas cost + 唯一 log address 列表（带 Etherscan `ContractName` 注解）+ ERC20 `Transfer` 解码（`topic0=0xddf252ad...`，3 topics 严格匹配，自动跳 ERC721 4-topic 变体），并 best-effort 拉每个 token 的 `symbol/decimals/name`（标准 selector + 兼容 `bytes32` symbol/name 的旧式 ERC20 如 MKR）。`decode_transfers` / `annotate_contracts` 默认 `true`，关掉跳过对应 lookup。注解 + token metadata 进进程内缓存，二次同 tx 命中只需重拉 receipt。**协议特异识别（"这是 Pendle market / PT / YT"）刻意不做**，靠 Etherscan ContractName + 调用方在 pendle-mcp 等下游做交叉。
 - **`query_logs`（RPC 路径）**：`page/offset` 用"按 block range 分段累积后切片"的 best-effort 实现；RPC log 不含 `timeStamp`，`time_stamp` 字段为 `null`。
 
 错误处理：JSON-RPC error 对象统一抛 `ValueError("RPC error: ...")`；Etherscan proxy 回退路径若返回非 hex `result`（往往是限流文案）会按错误处理而非成功；HTTP 429 / 5xx 走重试与退避。
