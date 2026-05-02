@@ -271,23 +271,31 @@ def get_block_time_by_number(block: Any, network: Optional[str] = None) -> dict:
 @server.tool(
     name="list_chains",
     title="List Supported Chains",
-    description="List chains supported by Etherscan V2 via /v2/chainlist.",
+    description="List chains supported by Etherscan V2 via /v2/chainlist. Each row carries `has_caveats` to flag chains with known plan/RPC limits — call chain_capabilities for detail.",
 )
 def list_chains(include_degraded: bool = True) -> dict:
     svc = _get_service()
-    chains = svc.chains.list_chains(include_degraded=include_degraded)
-    return {"total": len(chains), "result": chains}
+    return svc.list_chains_with_caveats(include_degraded=include_degraded)
 
 
 @server.tool(
     name="resolve_chain",
     title="Resolve Network To Chain ID",
-    description="Resolve a network string (name/alias) to chainid via chainlist. Prefer numeric chainid for precision.",
+    description="Resolve a network string (name/alias) to chainid via chainlist. Returns rpc_configured + caveats so plan/RPC limits surface up front. Prefer numeric chainid for precision.",
 )
 def resolve_chain(network: str) -> dict:
     svc = _get_service()
-    label, cid, meta = svc.chains.resolve(network)
-    return {"input": network, "network": label, "chain_id": cid, "meta": meta}
+    return svc.resolve_chain(network)
+
+
+@server.tool(
+    name="chain_capabilities",
+    title="Chain Capabilities Snapshot",
+    description="Per-chain capability snapshot: chain meta + RPC config state + per-tool caveats. Use this before running multi-step workflows on chains like Base/BSC to know which tools will be blocked by Etherscan free tier and which need RPC_URL_<chainid> set.",
+)
+def chain_capabilities(network: str) -> dict:
+    svc = _get_service()
+    return svc.chain_capabilities(network)
 
 
 @server.tool(

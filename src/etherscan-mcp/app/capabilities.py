@@ -1,0 +1,129 @@
+"""
+Per-chain tool capability matrix.
+
+Etherscan V2 plan limits and chain-specific quirks are not visible from chainlist
+itself — they only surface as runtime errors (typically `Free API access is not
+supported for this chain` or `txlist`/`tokentx` returning an empty result on free
+tier). This module hand-curates the known caveats so callers can see them up
+front via `resolve_chain` / `list_chains` / `chain_capabilities` instead of
+discovering them mid-run.
+
+Structure:
+- CHAIN_CAVEATS: chainid (str) -> list of caveat dicts.
+- A caveat targets either a specific tool name, or the wildcard `*module_proxy`
+  which expands to every tool that falls back to Etherscan `module=proxy` when no
+  `RPC_URL_<chainid>` is configured.
+
+Status values:
+- requires_rpc_url   Etherscan path blocked; setting `RPC_URL_<chainid>` makes
+                     the affected tool route via JSON-RPC and unblocks it.
+- paid_tier_only     Needs an Etherscan paid plan (or a third-party indexer);
+                     no RPC fallback exists for this surface.
+- degraded           Works but unreliably / partially.
+- unsupported        Not available on this chain at all.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, List
+
+STATUS_REQUIRES_RPC = "requires_rpc_url"
+STATUS_PAID_TIER_ONLY = "paid_tier_only"
+STATUS_DEGRADED = "degraded"
+STATUS_UNSUPPORTED = "unsupported"
+STATUS_OK = "ok"
+
+# Tools that route via Etherscan `module=proxy` when no RPC_URL_<chainid> is
+# configured. Setting RPC_URL_<chainid> makes them go via JSON-RPC and bypass
+# Etherscan plan limits.
+MODULE_PROXY_TOOLS = (
+    "call_function",
+    "get_storage_at",
+    "detect_proxy",
+    "query_logs",
+    "get_block_by_number",
+    "get_block_time_by_number",
+    "get_transaction",
+)
+
+_WILDCARD_MODULE_PROXY = "*module_proxy"
+
+# Hand-curated caveat matrix, sourced from README "已知限制" + observed runtime
+# failures. Keep entries minimal; only known-bad surfaces. Empty list / missing
+# chainid means "no known caveats — expected to work".
+CHAIN_CAVEATS: Dict[str, List[Dict[str, str]]] = {
+    # BSC
+    "56": [
+        {
+            "tool": "get_contract_creation",
+            "status": STATUS_DEGRADED,
+            "reason": "Etherscan getcontractcreation 在 BSC 上对部分地址（尤其是 internal CREATE）返回 NOTOK。",
+            "workaround": "配 RPC_URL_56 启用二分回退（需要 archive / full-history 节点）。",
+        },
+        {
+            "tool": _WILDCARD_MODULE_PROXY,
+            "status": STATUS_REQUIRES_RPC,
+            "reason": "Etherscan free tier 的 `module=proxy` 在 BSC 报 'Free API access is not supported for this chain'。",
+            "workaround": "配 RPC_URL_56；受影响的 tool 会自动改走 JSON-RPC。",
+        },
+    ],
+    # Base
+    "8453": [
+        {
+            "tool": "list_transactions",
+            "status": STATUS_PAID_TIER_ONLY,
+            "reason": "Etherscan txlist 在 Base free tier 返回空；JSON-RPC 没有等价的按地址倒查能力。",
+            "workaround": "Etherscan 付费计划，或用第三方索引服务（Covalent / Alchemy enhanced API）。",
+        },
+        {
+            "tool": "list_token_transfers",
+            "status": STATUS_PAID_TIER_ONLY,
+            "reason": "Etherscan tokentx 在 Base free tier 返回空，同样无 RPC 等价。",
+            "workaround": "Etherscan 付费计划，或用第三方索引服务。",
+        },
+        {
+            "tool": _WILDCARD_MODULE_PROXY,
+            "status": STATUS_REQUIRES_RPC,
+            "reason": "Etherscan free tier 的 `module=proxy` 在 Base 被挡。",
+            "workaround": "配 RPC_URL_8453；受影响的 tool 会自动改走 JSON-RPC。",
+        },
+    ],
+}
+
+
+def has_caveats(chain_id: str) -> bool:
+    """Cheap check used by list_chains to flag rows with known issues."""
+    return bool(CHAIN_CAVEATS.get(str(chain_id)))
+
+
+def _expand(caveats: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    """Expand `*module_proxy` wildcard into per-tool entries."""
+    out: List[Dict[str, str]] = []
+    for c in caveats:
+        if c.get("tool") == _WILDCARD_MODULE_PROXY:
+            for tool_name in MODULE_PROXY_TOOLS:
+                expanded = dict(c)
+                expanded["tool"] = tool_name
+                out.append(expanded)
+        else:
+            out.append(dict(c))
+    return out
+
+
+def caveats_for(chain_id: str, rpc_configured: bool) -> List[Dict[str, Any]]:
+    """
+    Return caveats for a chain, with `status_effective` reflecting whether
+    a configured RPC_URL_<chainid> mitigates each entry.
+
+    `requires_rpc_url` flips to `ok` when rpc_configured=True; everything else
+    stays as-is (paid_tier_only / degraded / unsupported are not RPC-fixable).
+    """
+    raw = CHAIN_CAVEATS.get(str(chain_id), [])
+    expanded = _expand(raw)
+    for c in expanded:
+        status = c.get("status")
+        if rpc_configured and status == STATUS_REQUIRES_RPC:
+            c["status_effective"] = STATUS_OK
+        else:
+            c["status_effective"] = status
+    return expanded

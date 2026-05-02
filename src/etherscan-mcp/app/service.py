@@ -6,6 +6,7 @@ import hashlib
 from decimal import Decimal, getcontext
 
 from .cache import ContractCache
+from .capabilities import caveats_for, has_caveats
 from .chains import ChainRegistry
 from .config import Config, resolve_chain_id
 from .etherscan_client import EtherscanClient
@@ -1567,6 +1568,56 @@ class ContractService:
             return self._normalize_address(str(address))
         except Exception:
             return None
+
+    def resolve_chain(self, network: str) -> Dict[str, Any]:
+        """
+        Public wrapper around ChainRegistry.resolve that also attaches
+        rpc_configured + caveats so MCP callers see plan/RPC limits up front.
+        """
+        if network is None or str(network).strip() == "":
+            raise ValueError("network must be a non-empty string.")
+        label, cid, meta = self.chains.resolve(str(network))
+        rpc_configured = bool(self.config.rpc_urls.get(str(cid)))
+        return {
+            "input": network,
+            "network": label,
+            "chain_id": cid,
+            "meta": meta,
+            "rpc_configured": rpc_configured,
+            "caveats": caveats_for(cid, rpc_configured),
+        }
+
+    def list_chains_with_caveats(self, include_degraded: bool = True) -> Dict[str, Any]:
+        """
+        List chains and tag each row with `has_caveats` so callers can spot
+        chains with known plan/RPC limits at a glance. Detail is on
+        `chain_capabilities(network)`.
+        """
+        rows = self.chains.list_chains(include_degraded=include_degraded)
+        for row in rows:
+            row["has_caveats"] = has_caveats(row.get("chainid", ""))
+        return {"total": len(rows), "result": rows}
+
+    def chain_capabilities(self, network: str) -> Dict[str, Any]:
+        """
+        Per-chain capability snapshot: chain meta + RPC config state +
+        per-tool caveats (with `status_effective` accounting for RPC fallback).
+        Tools not listed in `caveats` are expected to work as-is.
+        """
+        info = self.resolve_chain(network)
+        return {
+            "network": info["network"],
+            "chain_id": info["chain_id"],
+            "chain_meta": info["meta"],
+            "rpc_configured": info["rpc_configured"],
+            "rpc_env_var": f"RPC_URL_{info['chain_id']}",
+            "caveats": info["caveats"],
+            "note": (
+                "Tools not in `caveats` are expected to work via the default "
+                "Etherscan / RPC routing. `status_effective=ok` means a "
+                "configured RPC_URL_<chainid> mitigates the caveat."
+            ),
+        }
 
     def _resolve_network_and_chain(self, network: Optional[str]) -> Tuple[str, str]:
         if network is not None:

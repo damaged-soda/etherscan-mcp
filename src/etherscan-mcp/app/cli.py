@@ -118,6 +118,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Network name/alias or numeric chainid",
     )
 
+    capabilities_parser = subparsers.add_parser(
+        "chain-capabilities",
+        help="Show per-chain tool caveats + RPC config state for a network",
+    )
+    capabilities_parser.add_argument(
+        "--network",
+        required=True,
+        help="Network name/alias or numeric chainid",
+    )
+
     return parser
 
 
@@ -161,21 +171,14 @@ def main(argv: Optional[list[str]] = None) -> None:
             )
             print(json.dumps(result, indent=2))
         elif args.command == "list-chains":
-            chains = service.chains.list_chains(include_degraded=bool(args.include_degraded))
-            print(json.dumps({"total": len(chains), "result": chains}, indent=2))
-        elif args.command == "resolve-chain":
-            label, cid, meta = service.chains.resolve(args.network)
-            print(
-                json.dumps(
-                    {
-                        "input": args.network,
-                        "network": label,
-                        "chain_id": cid,
-                        "meta": meta,
-                    },
-                    indent=2,
-                )
+            result = service.list_chains_with_caveats(
+                include_degraded=bool(args.include_degraded)
             )
+            print(json.dumps(result, indent=2))
+        elif args.command == "resolve-chain":
+            print(json.dumps(service.resolve_chain(args.network), indent=2))
+        elif args.command == "chain-capabilities":
+            print(json.dumps(service.chain_capabilities(args.network), indent=2))
     except Exception as exc:  # pylint: disable=broad-except
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
