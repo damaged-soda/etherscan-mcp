@@ -32,6 +32,8 @@ class ContractService:
         self.cache = ContractCache()
         self.creation_cache = ContractCache()
         self.proxy_cache = ContractCache()
+        self.contract_name_cache = ContractCache()
+        self.token_metadata_cache = ContractCache()
         self._rpc_clients: Dict[str, RpcClient] = {}
         self.client = EtherscanClient(
             api_key=config.api_key,
@@ -514,6 +516,140 @@ class ContractService:
             "chain_id": chain_id,
             "transaction": tx_obj,
             "receipt": receipt_obj,
+        }
+
+    def get_transaction_summary(
+        self,
+        tx_hash: str,
+        network: Optional[str] = None,
+        decode_transfers: bool = True,
+        annotate_contracts: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Lightweight per-tx digest: tx meta + gas cost + unique log addresses
+        annotated with verified ContractName, plus decoded ERC20 Transfer flow
+        with token symbol/decimals (best-effort, swallows lookup failures).
+        Protocol-specific labeling (Pendle / Router / etc) is intentionally
+        out of scope — use ContractName plus caller-side cross-reference.
+        """
+        tx_data = self.get_transaction(tx_hash, network)
+        normalized_hash = tx_data.get("tx_hash")
+        network_label = tx_data.get("network")
+        chain_id = tx_data.get("chain_id")
+        tx = tx_data.get("transaction") or {}
+        receipt = tx_data.get("receipt") or {}
+        logs = receipt.get("logs") or []
+        if not isinstance(logs, list):
+            logs = []
+
+        log_addresses: List[str] = []
+        seen_log_addr: set = set()
+        for log in logs:
+            if not isinstance(log, dict):
+                continue
+            addr = log.get("address")
+            if not isinstance(addr, str):
+                continue
+            low = addr.lower()
+            if low in seen_log_addr:
+                continue
+            seen_log_addr.add(low)
+            log_addresses.append(low)
+
+        erc20_transfers: List[Dict[str, Any]] = []
+        if decode_transfers:
+            for log in logs:
+                decoded = self._decode_erc20_transfer_log(log)
+                if decoded:
+                    erc20_transfers.append(decoded)
+
+        token_addresses: List[str] = []
+        seen_token: set = set()
+        for transfer in erc20_transfers:
+            addr = transfer.get("token_address")
+            if not addr:
+                continue
+            low = addr.lower()
+            if low in seen_token:
+                continue
+            seen_token.add(low)
+            token_addresses.append(low)
+
+        token_metadata: Dict[str, Dict[str, Any]] = {}
+        for addr in token_addresses:
+            token_metadata[addr] = self._get_token_metadata(addr, network_label, chain_id, allow_default_rpc=network is None)
+
+        for transfer in erc20_transfers:
+            meta = token_metadata.get(transfer["token_address"], {}) or {}
+            transfer["token_symbol"] = meta.get("symbol")
+            transfer["token_decimals"] = meta.get("decimals")
+            decimals = meta.get("decimals")
+            amount_int = transfer.get("amount_int")
+            if isinstance(decimals, int) and decimals >= 0 and isinstance(amount_int, int):
+                transfer["amount_scaled"] = self._format_scaled_int(amount_int, decimals)
+            else:
+                transfer["amount_scaled"] = None
+
+        addresses_to_annotate = set(log_addresses)
+        tx_to = tx.get("to")
+        if isinstance(tx_to, str) and tx_to:
+            addresses_to_annotate.add(tx_to.lower())
+
+        contract_names: Dict[str, Optional[str]] = {}
+        if annotate_contracts:
+            for addr in addresses_to_annotate:
+                contract_names[addr] = self._get_contract_name_safe(addr, network_label, chain_id)
+
+        addresses_summary: List[Dict[str, Any]] = []
+        for addr in sorted(addresses_to_annotate):
+            meta = token_metadata.get(addr, {}) or {}
+            addresses_summary.append(
+                {
+                    "address": addr,
+                    "contract_name": contract_names.get(addr),
+                    "is_token": addr in seen_token,
+                    "token_symbol": meta.get("symbol"),
+                    "token_decimals": meta.get("decimals"),
+                }
+            )
+
+        gas_used = receipt.get("gas_used")
+        effective_gas_price = receipt.get("effective_gas_price")
+        gas_cost_wei = None
+        if isinstance(gas_used, int) and isinstance(effective_gas_price, int):
+            gas_cost_wei = gas_used * effective_gas_price
+
+        status_int = receipt.get("status")
+        if status_int == 1:
+            status_label = "success"
+        elif status_int == 0:
+            status_label = "failed"
+        else:
+            status_label = None
+
+        value_wei = tx.get("value_int")
+        value_eth = self._format_scaled_int(value_wei, 18) if isinstance(value_wei, int) else None
+
+        return {
+            "tx_hash": normalized_hash,
+            "network": network_label,
+            "chain_id": chain_id,
+            "status": status_label,
+            "block_number": receipt.get("block_number"),
+            "from": tx.get("from"),
+            "to": tx_to,
+            "to_contract_name": contract_names.get((tx_to or "").lower()) if tx_to else None,
+            "value_wei": value_wei,
+            "value_eth": value_eth,
+            "gas_used": gas_used,
+            "effective_gas_price_wei": effective_gas_price,
+            "gas_cost_wei": gas_cost_wei,
+            "gas_cost_eth": self._format_scaled_int(gas_cost_wei, 18) if isinstance(gas_cost_wei, int) else None,
+            "log_count": len(logs),
+            "addresses": addresses_summary,
+            "erc20_transfers": erc20_transfers,
+            "decode_transfers": bool(decode_transfers),
+            "annotate_contracts": bool(annotate_contracts),
         }
 
     def get_block_by_number(
@@ -1495,6 +1631,7 @@ class ContractService:
         abi = self._parse_abi(abi_raw, address, network, chain_id)
         source_files = self._parse_source_code(entry.get("SourceCode", ""))
         compiler = entry.get("CompilerVersion") or ""
+        contract_name = (entry.get("ContractName") or "").strip() or None
         proxy_flag = str(entry.get("Proxy", "")).strip().lower()
         is_proxy = proxy_flag in {"1", "true", "yes"}
         implementation = self._normalize_address_optional(entry.get("Implementation"))
@@ -1508,6 +1645,7 @@ class ContractService:
             "abi": abi,
             "source_files": source_files,
             "compiler": compiler,
+            "contract_name": contract_name,
             "verified": True,
             "proxy": is_proxy,
             "implementation": implementation,
@@ -2477,6 +2615,163 @@ class ContractService:
             base["token_id"] = transfer.get("tokenID") or transfer.get("tokenId")
             base["value"] = transfer.get("tokenValue") or transfer.get("value")
         return base
+
+    # ---- get_transaction_summary helpers ----
+
+    ERC20_TRANSFER_TOPIC0 = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+
+    def _decode_erc20_transfer_log(self, log: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(log, dict):
+            return None
+        topics = log.get("topics") or []
+        if not isinstance(topics, list) or len(topics) < 1:
+            return None
+        topic0 = topics[0]
+        if not isinstance(topic0, str) or topic0.lower() != self.ERC20_TRANSFER_TOPIC0:
+            return None
+        # ERC20 Transfer is exactly 3 topics (sig + indexed from + indexed to);
+        # 4-topic variant is ERC721 Transfer (tokenId is indexed). Skip ERC721 here.
+        if len(topics) != 3:
+            return None
+        try:
+            from_addr = "0x" + topics[1][-40:].lower()
+            to_addr = "0x" + topics[2][-40:].lower()
+            data = log.get("data") or "0x"
+            if not isinstance(data, str):
+                return None
+            data_clean = data[2:] if data.lower().startswith("0x") else data
+            amount_int = int(data_clean, 16) if data_clean else 0
+        except Exception:
+            return None
+        token_addr = log.get("address")
+        if not isinstance(token_addr, str):
+            return None
+        return {
+            "token_address": token_addr.lower(),
+            "from": from_addr,
+            "to": to_addr,
+            "amount_int": amount_int,
+            "amount_hex": data,
+            "log_index": log.get("log_index") or log.get("logIndex"),
+        }
+
+    def _get_contract_name_safe(
+        self, address: str, network_label: Optional[str], chain_id: str
+    ) -> Optional[str]:
+        cached = self.contract_name_cache.get(address, chain_id)
+        if cached is not None:
+            return cached.get("name")
+        existing = self.cache.get(address, chain_id)
+        if existing:
+            name = existing.get("contract_name")
+            self.contract_name_cache.set(address, chain_id, {"name": name})
+            return name
+        try:
+            contract = self._get_full_contract(address, network_label or "", chain_id)
+            name = contract.get("contract_name")
+        except Exception:
+            name = None
+        self.contract_name_cache.set(address, chain_id, {"name": name})
+        return name
+
+    def _get_token_metadata(
+        self,
+        address: str,
+        network_label: Optional[str],
+        chain_id: str,
+        allow_default_rpc: bool,
+    ) -> Dict[str, Any]:
+        cached = self.token_metadata_cache.get(address, chain_id)
+        if cached is not None:
+            return cached
+        symbol = self._raw_call_string_or_bytes32(address, "0x95d89b41", chain_id, allow_default_rpc)
+        decimals = self._raw_call_uint8(address, "0x313ce567", chain_id, allow_default_rpc)
+        name = self._raw_call_string_or_bytes32(address, "0x06fdde03", chain_id, allow_default_rpc)
+        meta = {"symbol": symbol, "decimals": decimals, "name": name}
+        self.token_metadata_cache.set(address, chain_id, meta)
+        return meta
+
+    def _raw_eth_call(
+        self,
+        address: str,
+        data_hex: str,
+        chain_id: str,
+        allow_default_rpc: bool,
+    ) -> Optional[str]:
+        rpc = self._get_rpc_client(chain_id, allow_default_rpc)
+        try:
+            if rpc:
+                result = rpc.call("eth_call", [{"to": address, "data": data_hex}, "latest"])
+                if isinstance(result, str):
+                    return result
+                return None
+            self.client.chain_id = chain_id
+            payload = self.client.call(address, data_hex, "latest")
+            extracted = self._extract_proxy_result(payload, allow_none=True)
+            if isinstance(extracted, str):
+                return extracted
+            return None
+        except Exception:
+            return None
+
+    def _raw_call_string_or_bytes32(
+        self, address: str, data_hex: str, chain_id: str, allow_default_rpc: bool
+    ) -> Optional[str]:
+        raw = self._raw_eth_call(address, data_hex, chain_id, allow_default_rpc)
+        if not isinstance(raw, str):
+            return None
+        body = raw[2:] if raw.lower().startswith("0x") else raw
+        if not body or body == "0" * len(body):
+            return None
+        try:
+            data_bytes = bytes.fromhex(body)
+        except ValueError:
+            return None
+        # ABI-encoded string: head word = offset (usually 0x20), then length word, then bytes.
+        if len(data_bytes) >= 64:
+            try:
+                offset = int.from_bytes(data_bytes[0:32], "big")
+                if 0 < offset <= len(data_bytes) - 32:
+                    length = int.from_bytes(data_bytes[offset:offset + 32], "big")
+                    start = offset + 32
+                    end = start + length
+                    if 0 < length <= len(data_bytes) - start and end <= len(data_bytes):
+                        try:
+                            text = data_bytes[start:end].decode("utf-8")
+                            text = text.strip()
+                            if text:
+                                return text
+                        except UnicodeDecodeError:
+                            pass
+            except Exception:
+                pass
+        # bytes32 fallback (e.g. MakerDAO MKR uses bytes32 symbol/name).
+        if len(data_bytes) == 32:
+            try:
+                text = data_bytes.rstrip(b"\x00").decode("utf-8")
+                text = text.strip()
+                if text:
+                    return text
+            except UnicodeDecodeError:
+                return None
+        return None
+
+    def _raw_call_uint8(
+        self, address: str, data_hex: str, chain_id: str, allow_default_rpc: bool
+    ) -> Optional[int]:
+        raw = self._raw_eth_call(address, data_hex, chain_id, allow_default_rpc)
+        if not isinstance(raw, str):
+            return None
+        body = raw[2:] if raw.lower().startswith("0x") else raw
+        if not body:
+            return None
+        try:
+            value = int(body, 16)
+        except ValueError:
+            return None
+        if 0 <= value <= 255:
+            return value
+        return None
 
     def _map_log(self, entry: Dict[str, Any]) -> Dict[str, Any]:
         return {
