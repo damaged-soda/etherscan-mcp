@@ -42,10 +42,13 @@ python -m app resolve-chain --network <name|alias|chainid>
 ```bash
 codex mcp add etherscan-mcp \
   --env ETHERSCAN_API_KEY=<your-api-key> \
+  --env RPC_URL_1=<archive-rpc-https-endpoint> \
   --env RPC_URL_56=<your-bsc-rpc-https-endpoint> \
   --env RPC_URL_8453=<your-base-rpc-https-endpoint> \
   -- bash -lc "cd `pwd`/src/etherscan-mcp && python -m app.mcp_server --transport stdio"
 ```
+
+`RPC_URL_1` 推荐配 archive 节点（Alchemy / Quicknode / drpc / Ankr / 自建 erigon），`call_function` / `get_storage_at` 才能按历史 block_tag 读链上 state；普通 full node 不带 archive 不行（详见 [已知限制](#已知限制)）。
 
 工具列表变更后需在 Codex / Claude Code 侧重新连接 MCP server。常用主网测试地址：USDT `0xdAC17F958D2ee523a2206206994597C13D831ec7`、USDC `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48`。
 
@@ -101,6 +104,7 @@ codex mcp add etherscan-mcp \
 - **`list_transactions` / `list_token_transfers` 在部分 free tier 链上返回空**：对应 Etherscan 的 `txlist` / `tokentx` indexed 端点，原生 JSON-RPC 没有等价能力（`eth_*` 只能按 hash/block 拿，没法按 address 倒查历史）。Base 等链 free tier 直接返回空，目前没有 fallback。后续如有需要要走 BaseScan native key 或第三方索引服务（Covalent / Alchemy enhanced API），单独立项。`status=paid_tier_only`。
 - **`get_contract_creation` 在 BSC 等链可能 NOTOK**：建议配 `RPC_URL_<chainid>` 启用 RPC 二分回退；internal create 场景可能仅返回 `block_number/timestamp`（`complete=false`），且需要 archive / full-history 节点。`status=degraded`。
 - **`module=proxy` 在 Base / BSC 等链 free tier 受限**：会报 `Free API access is not supported for this chain`，配 `RPC_URL_<chainid>` 绕开。`status=requires_rpc_url`，配上 RPC 后 `status_effective` 自动降级为 `ok`。
+- **`call_function` / `get_storage_at` 历史 block_tag 全链不支持（chain-agnostic）**：Etherscan `module=proxy` 对非 `latest|earliest|pending` 的 block_tag **静默忽略**，永远返回 latest state（debug 起来很坑），所有链都一样。当前代码当 RPC 未配且传了历史 block_tag 时**显式报错**（不再静默 fallback）。修复方式：配 archive 节点的 `RPC_URL_<chainid>`，**普通 full node 不够要 archive**（Alchemy / Quicknode / drpc / Ankr / 自建 erigon）。`status=requires_rpc_url`，登记在 `GLOBAL_CAVEATS`，全链生效。`status_effective` 在 `RPC_URL_<chainid>` 配上后会降级为 `ok`，但 archive vs full node 没法从 URL 自动检测，**配错节点会运行时报"historical state not available"**。
 - **新链 / 未列入 caveat 矩阵的链**（HyperEVM、Plasma 等）：默认按"无 caveat"处理。先用 `list_chains` 确认 Etherscan V2 是否覆盖（status=1 为正常），跑任务踩坑后回头补 `capabilities.py`。
 
 ## 配置（环境变量）
@@ -113,7 +117,7 @@ codex mcp add etherscan-mcp \
 | `CHAIN_ID` | — | 硬覆盖 network 推导出的 chainid |
 | `ETHERSCAN_CHAINLIST_URL` | `https://api.etherscan.io/v2/chainlist` | 链清单端点 |
 | `CHAINLIST_TTL_SECONDS` | `3600` | 链清单缓存 TTL |
-| `RPC_URL_<chainid>` | — | 指定链的 JSON-RPC HTTP 端点（推荐：`RPC_URL_56` BSC、`RPC_URL_8453` Base） |
+| `RPC_URL_<chainid>` | — | 指定链的 JSON-RPC HTTP 端点。BSC/Base 等绕 free-tier proxy 限制配普通 full node 即可；`call_function` / `get_storage_at` 走历史 block_tag 必须配 **archive 节点**（Alchemy / Quicknode / drpc / Ankr / 自建 erigon）。常用 chain：`RPC_URL_1` (mainnet)、`RPC_URL_42161` (arbitrum)、`RPC_URL_8453` (base)、`RPC_URL_10` (optimism)、`RPC_URL_137` (polygon)、`RPC_URL_56` (bsc) |
 | `RPC_<chainid>` | — | `RPC_URL_<chainid>` 的兼容别名 |
 | `RPC_URL` | — | 默认链的 JSON-RPC 端点（仅未显式传 `network` 时生效；显式传 `network` 推荐用 `RPC_URL_<chainid>` 避免误绑定） |
 | `REQUEST_TIMEOUT` | `10` | 单次请求超时（秒） |
@@ -123,6 +127,8 @@ codex mcp add etherscan-mcp \
 | `METADATA_FETCH_CONCURRENCY` | `5` | `get_transaction_summary` 拉 token metadata（symbol/decimals/name）+ contract name 时的线程池并发数。冷启动一笔 tx 涉及 9 个新 token + 17 个未注解地址时，从串行 ~40s 降到 ~6-8s。设大触发更多 429 / rate limit；`1` 退化回串行。 |
 
 读链类工具（`call_function` / `get_storage_at` / `detect_proxy` / `query_logs` / `get_block_by_number` / `get_block_time_by_number` / `get_transaction`）在配了对应 `RPC_URL_<chainid>` 时优先走 RPC；未配则保持原行为，回退 Etherscan `module=proxy`。
+
+例外：`call_function` / `get_storage_at` 在传了历史 block_tag（hex / decimal block number）但 RPC 未配时，**显式报错**而不再回退 `module=proxy` —— Etherscan proxy 对历史 tag 静默忽略并返回 latest state，回退会让历史读看起来"成功了"实际上是 latest，比报错更坑。要走历史 block_tag 必须配 archive 节点（详见 [已知限制](#已知限制)）。
 
 ## 命名约定
 

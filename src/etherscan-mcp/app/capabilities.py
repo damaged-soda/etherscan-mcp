@@ -9,7 +9,11 @@ front via `resolve_chain` / `list_chains` / `chain_capabilities` instead of
 discovering them mid-run.
 
 Structure:
-- CHAIN_CAVEATS: chainid (str) -> list of caveat dicts.
+- CHAIN_CAVEATS: chainid (str) -> list of caveat dicts. Chain-specific quirks
+  (Etherscan free-tier limits on BSC/Base, etc.).
+- GLOBAL_CAVEATS: list of caveat dicts that apply to every chain (chain-agnostic
+  Etherscan API behaviors that don't change per chain). Merged into every
+  `caveats_for(...)` response.
 - A caveat targets either a specific tool name, or the wildcard `*module_proxy`
   which expands to every tool that falls back to Etherscan `module=proxy` when no
   `RPC_URL_<chainid>` is configured.
@@ -51,6 +55,25 @@ _WILDCARD_MODULE_PROXY = "*module_proxy"
 # Hand-curated caveat matrix, sourced from README "已知限制" + observed runtime
 # failures. Keep entries minimal; only known-bad surfaces. Empty list / missing
 # chainid means "no known caveats — expected to work".
+# Chain-agnostic caveats. Apply to every chain regardless of CHAIN_CAVEATS entry.
+# Use for Etherscan API behaviors that don't change per chain (e.g. `module=proxy`
+# silently ignoring non-latest block tags is true on every chain Etherscan covers).
+GLOBAL_CAVEATS: List[Dict[str, str]] = [
+    {
+        "tool": "call_function",
+        "status": STATUS_REQUIRES_RPC,
+        "reason": "Etherscan `module=proxy` (eth_call) 静默忽略非 latest/earliest/pending 的 block_tag，对历史区块号永远返回 latest state。",
+        "workaround": "配 archive 节点的 `RPC_URL_<chainid>`（Alchemy / Quicknode / drpc / Ankr / 自建 erigon）；普通 full node 也不行，要 archive。",
+    },
+    {
+        "tool": "get_storage_at",
+        "status": STATUS_REQUIRES_RPC,
+        "reason": "Etherscan `module=proxy` (eth_getStorageAt) 同样不支持历史 block_tag；某些链节点会返回 `historical state ... not available`，但路径本身需要 archive。",
+        "workaround": "配 archive 节点的 `RPC_URL_<chainid>`（Alchemy / Quicknode / drpc / Ankr / 自建 erigon）；普通 full node 也不行。",
+    },
+]
+
+
 CHAIN_CAVEATS: Dict[str, List[Dict[str, str]]] = {
     # BSC
     "56": [
@@ -159,7 +182,13 @@ def build_route_hints(
 
 
 def has_caveats(chain_id: str) -> bool:
-    """Cheap check used by list_chains to flag rows with known issues."""
+    """Cheap check used by `list_chains` to flag rows with known issues.
+
+    Only counts chain-specific caveats. `GLOBAL_CAVEATS` apply to every chain
+    by definition, so flagging them here would mark every row — defeating the
+    point of `has_caveats` (which is to highlight rows that need extra
+    attention vs the default). Use `caveats_for(...)` to see the full
+    chain + global merged view."""
     return bool(CHAIN_CAVEATS.get(str(chain_id)))
 
 
@@ -182,10 +211,17 @@ def caveats_for(chain_id: str, rpc_configured: bool) -> List[Dict[str, Any]]:
     Return caveats for a chain, with `status_effective` reflecting whether
     a configured RPC_URL_<chainid> mitigates each entry.
 
-    `requires_rpc_url` flips to `ok` when rpc_configured=True; everything else
-    stays as-is (paid_tier_only / degraded / unsupported are not RPC-fixable).
+    Chain-specific entries from CHAIN_CAVEATS are merged with chain-agnostic
+    entries from GLOBAL_CAVEATS. `requires_rpc_url` flips to `ok` when
+    rpc_configured=True; everything else stays as-is (paid_tier_only /
+    degraded / unsupported are not RPC-fixable).
+
+    Note: `GLOBAL_CAVEATS` for `call_function` / `get_storage_at` flagging
+    historical-block-tag support flips to `ok` when ANY RPC_URL is configured,
+    but the workaround text reminds callers that the configured node must be
+    an archive node (we can't introspect URL to verify that).
     """
-    raw = CHAIN_CAVEATS.get(str(chain_id), [])
+    raw = list(CHAIN_CAVEATS.get(str(chain_id), [])) + list(GLOBAL_CAVEATS)
     expanded = _expand(raw)
     for c in expanded:
         status = c.get("status")
