@@ -25,6 +25,13 @@ RPC_LOGS_BLOCK_STEP = 2000
 getcontext().prec = 100
 
 
+class _TransientCallError(Exception):
+    """Raised when an `eth_call` fails for transient reasons (RPC HTTP error,
+    timeout, JSON-RPC error response). Distinct from the `eth_call` returning a
+    deterministic empty result. Used by `_get_token_metadata` to avoid caching
+    `None` for a field whose lookup just hit a flaky network condition."""
+
+
 class ContractService:
     """Combine configuration, cache, and client to serve contract details."""
 
@@ -2892,15 +2899,33 @@ class ContractService:
         chain_id: str,
         allow_default_rpc: bool,
     ) -> Dict[str, Any]:
-        cached = self.token_metadata_cache.get(address, chain_id)
-        if cached is not None:
-            return cached
-        symbol = self._raw_call_string_or_bytes32(address, "0x95d89b41", chain_id, allow_default_rpc)
-        decimals = self._raw_call_uint8(address, "0x313ce567", chain_id, allow_default_rpc)
-        name = self._raw_call_string_or_bytes32(address, "0x06fdde03", chain_id, allow_default_rpc)
-        meta = {"symbol": symbol, "decimals": decimals, "name": name}
-        self.token_metadata_cache.set(address, chain_id, meta)
-        return meta
+        # Per-field cache: a missing entry means "never resolved", a None value
+        # means "resolved to deterministic absence" (e.g. token doesn't expose
+        # symbol() or decimals()). A transient RPC failure leaves the field out
+        # of the cache so a later call retries.
+        cached = self.token_metadata_cache.get(address, chain_id) or {}
+        fields = (
+            ("symbol", "0x95d89b41", self._raw_call_string_or_bytes32),
+            ("decimals", "0x313ce567", self._raw_call_uint8),
+            ("name", "0x06fdde03", self._raw_call_string_or_bytes32),
+        )
+        if all(k in cached for k, _, _ in fields):
+            return dict(cached)
+        result = dict(cached)
+        for field, selector, fetcher in fields:
+            if field in result:
+                continue
+            try:
+                result[field] = fetcher(address, selector, chain_id, allow_default_rpc)
+            except _TransientCallError:
+                # Skip caching this field; next call will retry.
+                pass
+        self.token_metadata_cache.set(address, chain_id, dict(result))
+        # Surface every field (filling unresolved ones with None for backwards-
+        # compat with the previous return shape).
+        for field, _, _ in fields:
+            result.setdefault(field, None)
+        return result
 
     def _raw_eth_call(
         self,
@@ -2909,21 +2934,24 @@ class ContractService:
         chain_id: str,
         allow_default_rpc: bool,
     ) -> Optional[str]:
+        """Returns the raw hex string from `eth_call`, or `None` only when the
+        call deterministically returned no string (e.g. node returned non-string
+        result). Raises `_TransientCallError` for any RPC-level failure (HTTP,
+        timeout, JSON-RPC error, Etherscan proxy error) so callers can decide
+        whether to cache the absence."""
         rpc = self._get_rpc_client(chain_id, allow_default_rpc)
         try:
             if rpc:
                 result = rpc.call("eth_call", [{"to": address, "data": data_hex}, "latest"])
-                if isinstance(result, str):
-                    return result
-                return None
-            self.client.chain_id = chain_id
-            payload = self.client.call(address, data_hex, "latest")
-            extracted = self._extract_proxy_result(payload, allow_none=True)
-            if isinstance(extracted, str):
-                return extracted
-            return None
-        except Exception:
-            return None
+            else:
+                self.client.chain_id = chain_id
+                payload = self.client.call(address, data_hex, "latest")
+                result = self._extract_proxy_result(payload, allow_none=True)
+        except Exception as exc:
+            raise _TransientCallError(str(exc)) from exc
+        if isinstance(result, str):
+            return result
+        return None
 
     def _raw_call_string_or_bytes32(
         self, address: str, data_hex: str, chain_id: str, allow_default_rpc: bool
