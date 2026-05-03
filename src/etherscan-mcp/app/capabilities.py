@@ -112,6 +112,8 @@ ROUTE_HINT_RULES: List[Dict[str, Any]] = [
     {
         "label": "1inch aggregation used",
         "any_contract_name_substr": ["AggregationRouterV"],
+        # Kyber 的 MetaAggregationRouterV2 子串包含 AggregationRouterV，不能算 1inch。
+        "not_contract_name_substr": ["Meta"],
     },
     {
         "label": "Touches Uniswap V3 / CL pool",
@@ -132,9 +134,17 @@ def build_route_hints(
     names = [(n or "") for n in contract_names]
     symbols_upper = [(s or "").upper() for s in token_symbols]
     for rule in ROUTE_HINT_RULES:
+        excludes = rule.get("not_contract_name_substr", []) or []
+
+        def _name_matches(substr: str) -> bool:
+            return any(
+                substr in n and not any(ex in n for ex in excludes)
+                for n in names
+            )
+
         matched = False
         for substr in rule.get("any_contract_name_substr", []) or []:
-            if any(substr in n for n in names):
+            if _name_matches(substr):
                 matched = True
                 break
         if not matched:
