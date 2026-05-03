@@ -1,6 +1,7 @@
 import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, Optional
 
 DEFAULT_BASE_URL = "https://api.etherscan.io/v2/api"
@@ -33,6 +34,11 @@ class Config:
     chainlist_ttl_seconds: int = 3600
     rpc_urls: Dict[str, str] = field(default_factory=dict)
     rpc_url_default: Optional[str] = None
+    # Disk cache directory for stable per-(chain, address) lookups (token
+    # symbol/decimals/name, contract names). Empty string disables persistence
+    # entirely. Absent / None falls back to ~/.cache/etherscan-mcp.
+    cache_dir: Optional[Path] = None
+    metadata_fetch_concurrency: int = 5
 
 
 def resolve_chain_id(network: str, override_chain_id: Optional[str] = None) -> str:
@@ -86,6 +92,17 @@ def load_config() -> Config:
     rpc_url_default = os.getenv("RPC_URL")
     rpc_url_default = rpc_url_default.strip() if rpc_url_default else None
 
+    cache_dir_env = os.getenv("ETHERSCAN_MCP_CACHE_DIR")
+    if cache_dir_env is None:
+        cache_dir: Optional[Path] = Path.home() / ".cache" / "etherscan-mcp"
+    else:
+        stripped = cache_dir_env.strip()
+        cache_dir = Path(stripped).expanduser() if stripped else None
+
+    metadata_concurrency = int(os.getenv("METADATA_FETCH_CONCURRENCY", "5"))
+    if metadata_concurrency < 1:
+        metadata_concurrency = 1
+
     chain_id_override = chain_id_env.strip() if chain_id_env else None
 
     # If NETWORK is unknown here, defer resolution to ChainRegistry at runtime.
@@ -110,4 +127,6 @@ def load_config() -> Config:
         chainlist_ttl_seconds=ttl,
         rpc_urls=rpc_urls,
         rpc_url_default=rpc_url_default,
+        cache_dir=cache_dir,
+        metadata_fetch_concurrency=metadata_concurrency,
     )

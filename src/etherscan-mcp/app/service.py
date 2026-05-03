@@ -1,6 +1,7 @@
 import copy
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import hashlib
 from decimal import Decimal, getcontext
@@ -48,11 +49,20 @@ class ContractService:
 
     def __init__(self, config: Config) -> None:
         self.config = config
+        cache_dir = config.cache_dir
+        # Persist the two caches whose entries are small and stable per
+        # (chain, address): token metadata (symbol/decimals/name) and contract
+        # names. Skip full contract details (source code = huge) and proxy /
+        # creation info (proxies upgrade, creation lookups are cheap).
         self.cache = ContractCache()
         self.creation_cache = ContractCache()
         self.proxy_cache = ContractCache()
-        self.contract_name_cache = ContractCache()
-        self.token_metadata_cache = ContractCache()
+        self.contract_name_cache = ContractCache(
+            disk_path=(cache_dir / "contract_names.json") if cache_dir else None
+        )
+        self.token_metadata_cache = ContractCache(
+            disk_path=(cache_dir / "token_metadata.json") if cache_dir else None
+        )
         self._rpc_clients: Dict[str, RpcClient] = {}
         self.client = EtherscanClient(
             api_key=config.api_key,
@@ -612,8 +622,20 @@ class ContractService:
             token_addresses.append(low)
 
         token_metadata: Dict[str, Dict[str, Any]] = {}
-        for addr in token_addresses:
-            token_metadata[addr] = self._get_token_metadata(addr, network_label, chain_id, allow_default_rpc=network is None)
+        if token_addresses:
+            allow_default = network is None
+            with ThreadPoolExecutor(
+                max_workers=min(self.config.metadata_fetch_concurrency, len(token_addresses))
+            ) as pool:
+                results = pool.map(
+                    lambda a: (
+                        a,
+                        self._get_token_metadata(a, network_label, chain_id, allow_default_rpc=allow_default),
+                    ),
+                    token_addresses,
+                )
+                for addr, meta in results:
+                    token_metadata[addr] = meta
 
         for transfer in erc20_transfers:
             meta = token_metadata.get(transfer["token_address"], {}) or {}
@@ -632,9 +654,17 @@ class ContractService:
             addresses_to_annotate.add(tx_to.lower())
 
         contract_names: Dict[str, Optional[str]] = {}
-        if annotate_contracts:
-            for addr in addresses_to_annotate:
-                contract_names[addr] = self._get_contract_name_safe(addr, network_label, chain_id)
+        if annotate_contracts and addresses_to_annotate:
+            addrs_list = list(addresses_to_annotate)
+            with ThreadPoolExecutor(
+                max_workers=min(self.config.metadata_fetch_concurrency, len(addrs_list))
+            ) as pool:
+                results = pool.map(
+                    lambda a: (a, self._get_contract_name_safe(a, network_label, chain_id)),
+                    addrs_list,
+                )
+                for addr, name in results:
+                    contract_names[addr] = name
 
         addresses_summary: List[Dict[str, Any]] = []
         for addr in sorted(addresses_to_annotate):
@@ -2995,16 +3025,22 @@ class ContractService:
     def _raw_call_string_or_bytes32(
         self, address: str, data_hex: str, chain_id: str, allow_default_rpc: bool
     ) -> Optional[str]:
+        """Return the decoded string, or `None` only when both ABI string and
+        bytes32 decoders failed on a non-empty result. "Empty / all-zero / not
+        a string" outcomes are treated as transient (raise `_TransientCallError`)
+        because real ERC20 tokens always have a symbol — an empty result is
+        almost always a node hiccup, not the contract's actual state, and
+        caching it as `None` would permanently mask the field."""
         raw = self._raw_eth_call(address, data_hex, chain_id, allow_default_rpc)
         if not isinstance(raw, str):
-            return None
+            raise _TransientCallError("eth_call returned non-string result")
         body = raw[2:] if raw.lower().startswith("0x") else raw
         if not body or body == "0" * len(body):
-            return None
+            raise _TransientCallError("eth_call returned empty / all-zero bytes")
         try:
             data_bytes = bytes.fromhex(body)
         except ValueError:
-            return None
+            raise _TransientCallError(f"eth_call returned non-hex result: {raw!r}") from None
         # ABI-encoded string: head word = offset (usually 0x20), then length word, then bytes.
         if len(data_bytes) >= 64:
             try:
@@ -3031,25 +3067,31 @@ class ContractService:
                 if text:
                     return text
             except UnicodeDecodeError:
-                return None
+                pass
+        # Real decode failure on a non-empty payload: this contract genuinely
+        # doesn't expose a parseable symbol/name. Cache as None.
         return None
 
     def _raw_call_uint8(
         self, address: str, data_hex: str, chain_id: str, allow_default_rpc: bool
     ) -> Optional[int]:
+        """Return the parsed uint8, or raise `_TransientCallError` for any
+        ambiguous outcome. There is no legitimate "contract doesn't have
+        decimals()" case for a real ERC20 — caching `None` for decimals
+        permanently breaks token amount scaling, so we always retry."""
         raw = self._raw_eth_call(address, data_hex, chain_id, allow_default_rpc)
         if not isinstance(raw, str):
-            return None
+            raise _TransientCallError("eth_call returned non-string result")
         body = raw[2:] if raw.lower().startswith("0x") else raw
         if not body:
-            return None
+            raise _TransientCallError("eth_call returned empty body")
         try:
             value = int(body, 16)
         except ValueError:
-            return None
+            raise _TransientCallError(f"eth_call returned non-integer hex: {raw!r}") from None
         if 0 <= value <= 255:
             return value
-        return None
+        raise _TransientCallError(f"eth_call returned uint8 out of range: {value}")
 
     def _map_log(self, entry: Dict[str, Any]) -> Dict[str, Any]:
         return {
