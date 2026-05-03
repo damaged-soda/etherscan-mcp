@@ -995,6 +995,7 @@ class ContractService:
                 raise ValueError("RPC error: eth_call returned unexpected result.")
             result = self._normalize_hex_string(raw_result, "result")
         else:
+            self._require_rpc_for_historical_tag(tag, chain_id, "call_function")
             payload = self.client.call(normalized_address, normalized_data, tag)
             result = self._extract_proxy_result(payload)
         decoded = self._decode_call_result(result, func_meta, decimals)
@@ -2304,6 +2305,25 @@ class ContractService:
             raise ValueError("tx_hash must be 0x-prefixed 64 hex characters.")
         return candidate
 
+    _LATEST_LIKE_TAGS = frozenset({"latest", "earliest", "pending"})
+
+    def _require_rpc_for_historical_tag(
+        self, tag: str, chain_id: str, tool_name: str
+    ) -> None:
+        """Raise if `tag` is a historical block (hex / decimal) and no RPC client
+        is available. The Etherscan `module=proxy` path silently ignores any tag
+        that isn't `latest|earliest|pending` and returns latest state, which has
+        bitten callers doing historical state reads. Fail loud instead."""
+        if tag in self._LATEST_LIKE_TAGS:
+            return
+        raise ValueError(
+            f"{tool_name}: historical block_tag={tag!r} requires a JSON-RPC archive node; "
+            f"set RPC_URL_{chain_id} or RPC_{chain_id} (recommended: archive RPC such as "
+            f"Alchemy / Quicknode / drpc / Ankr / self-hosted erigon). Etherscan "
+            f"`module=proxy` silently ignores non-{{latest|earliest|pending}} tags and "
+            f"would return latest state, masking the historical query."
+        )
+
     def _normalize_block_tag(self, tag: Optional[str]) -> str:
         if tag is None:
             return "latest"
@@ -2792,6 +2812,7 @@ class ContractService:
                 raise ValueError("RPC error: eth_getStorageAt returned unexpected result.")
             return self._normalize_hex_string(result, "storage_word", pad_to=64)
 
+        self._require_rpc_for_historical_tag(tag, chain_id, "get_storage_at")
         payload = self.client.get_storage_at(address, slot, tag)
         return self._extract_proxy_result(payload)
 
