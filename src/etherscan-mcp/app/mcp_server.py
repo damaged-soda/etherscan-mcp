@@ -233,7 +233,10 @@ def get_transaction(tx_hash: str, network: Optional[str] = None) -> dict:
         "set false to skip the corresponding lookups. Set compact=true for an arbitrage-"
         "oriented digest: gas split into execution_fee/l1_fee/total_fee (OP stack L2), "
         "ERC20 flow aggregated into net_token_flow_by_address instead of a per-log dump, "
-        "plus heuristic route_hints (Pendle / Kyber / 1inch / UniV3 / PT/YT/SY)."
+        "plus heuristic route_hints (Pendle / Kyber / 1inch / UniV3 / PT/YT/SY). "
+        "flow_scope (compact only): 'user' (default) keeps only tx.from net flow rows; "
+        "'user_router' adds tx.to; 'all' keeps every row including pools / zero-address "
+        "mints+burns / aggregator middlemen."
     ),
 )
 def get_transaction_summary(
@@ -242,10 +245,11 @@ def get_transaction_summary(
     decode_transfers: bool = True,
     annotate_contracts: bool = True,
     compact: bool = False,
+    flow_scope: str = "user",
 ) -> dict:
     svc = _get_service()
     return svc.get_transaction_summary(
-        tx_hash, network, decode_transfers, annotate_contracts, compact
+        tx_hash, network, decode_transfers, annotate_contracts, compact, flow_scope
     )
 
 

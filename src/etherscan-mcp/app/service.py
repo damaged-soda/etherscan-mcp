@@ -21,6 +21,17 @@ DEFAULT_OFFSET = 100
 DEFAULT_INLINE_SOURCE_LIMIT = 20000
 RPC_LOGS_BLOCK_STEP = 2000
 
+# Allowed values for `get_transaction_summary(compact=True, flow_scope=...)`:
+# - "user":        keep only flow rows whose address == tx.from
+# - "user_router": keep tx.from + tx.to (handy when the router itself is the
+#                  intermediary the user signed against)
+# - "all":         keep every (address, token) row, including pools / zero
+#                  address mints+burns / aggregator middlemen
+FLOW_SCOPE_USER = "user"
+FLOW_SCOPE_USER_ROUTER = "user_router"
+FLOW_SCOPE_ALL = "all"
+FLOW_SCOPES = (FLOW_SCOPE_USER, FLOW_SCOPE_USER_ROUTER, FLOW_SCOPE_ALL)
+
 # Increase precision for Decimal-based formatting
 getcontext().prec = 100
 
@@ -533,6 +544,7 @@ class ContractService:
         decode_transfers: bool = True,
         annotate_contracts: bool = True,
         compact: bool = False,
+        flow_scope: str = FLOW_SCOPE_USER,
     ) -> Dict[str, Any]:
         """
         Lightweight per-tx digest: tx meta + gas cost + unique log addresses
@@ -546,7 +558,16 @@ class ContractService:
         execution_fee / l1_fee / total_fee split, `contracts` + `tokens`
         annotation lists, `net_token_flow_by_address` aggregated ERC20 deltas,
         heuristic `route_hints`, and `counts`. Drops the per-log transfer dump.
+
+        flow_scope (compact only): "user" (default) keeps only the signer's
+        net flow rows; "user_router" also keeps tx.to; "all" keeps every
+        (address, token) row including pools / zero address mints+burns /
+        aggregator middlemen. Ignored when compact=False.
         """
+        if flow_scope not in FLOW_SCOPES:
+            raise ValueError(
+                f"flow_scope must be one of {'/'.join(FLOW_SCOPES)}; got {flow_scope!r}."
+            )
         tx_data = self.get_transaction(tx_hash, network)
         normalized_hash = tx_data.get("tx_hash")
         network_label = tx_data.get("network")
@@ -673,6 +694,7 @@ class ContractService:
                 logs=logs,
                 log_addresses=log_addresses,
                 decode_transfers=decode_transfers,
+                flow_scope=flow_scope,
             )
 
         return {
@@ -722,6 +744,7 @@ class ContractService:
         logs: List[Any],
         log_addresses: List[str],
         decode_transfers: bool,
+        flow_scope: str,
     ) -> Dict[str, Any]:
         # contracts: only addresses that have a verified name (skip raw EOAs / unverified).
         contracts: List[Dict[str, Any]] = []
@@ -792,6 +815,19 @@ class ContractService:
         # Stable order: by address, then token, with larger |amount| first.
         net_flow.sort(key=lambda r: (r["address"], -abs(r["amount_int"]), r["token_address"]))
 
+        # flow_scope filter: drop pool / aggregator / zero-address rows when the
+        # caller only cares about the signer's net position. tokens / contracts
+        # / protocols stay full so the tx structure remains visible.
+        flow_total_rows = len(net_flow)
+        if flow_scope != FLOW_SCOPE_ALL:
+            keep_addrs = set()
+            tx_from_low = (tx_from or "").lower()
+            if tx_from_low:
+                keep_addrs.add(tx_from_low)
+            if flow_scope == FLOW_SCOPE_USER_ROUTER and tx_to:
+                keep_addrs.add(tx_to.lower())
+            net_flow = [r for r in net_flow if (r["address"] or "").lower() in keep_addrs]
+
         contract_name_list = [c["name"] for c in contracts]
         token_symbol_list = [t["symbol"] or "" for t in tokens]
         route_hints = build_route_hints(contract_name_list, token_symbol_list)
@@ -827,11 +863,14 @@ class ContractService:
             "contracts": contracts,
             "tokens": tokens,
             "net_token_flow_by_address": net_flow,
+            "flow_scope": flow_scope,
             "route_hints": route_hints,
             "counts": {
                 "logs": len(logs),
                 "unique_log_addresses": len(log_addresses),
                 "erc20_transfers": len(erc20_transfers) if decode_transfers else 0,
+                "flow_rows_total": flow_total_rows,
+                "flow_rows_after_scope": len(net_flow),
             },
             "compact": True,
         }
