@@ -2968,30 +2968,37 @@ class ContractService:
         chain_id: str,
         allow_default_rpc: bool,
     ) -> Dict[str, Any]:
-        # Per-field cache: a missing entry means "never resolved", a None value
-        # means "resolved to deterministic absence" (e.g. token doesn't expose
-        # symbol() or decimals()). A transient RPC failure leaves the field out
-        # of the cache so a later call retries.
+        # Cache stores resolved values only (no None / no missing keys treated
+        # specially). Three "field has no value" outcomes are unified into
+        # "retry next call":
+        #   1. field never attempted (key missing)
+        #   2. fetcher raised _TransientCallError this call
+        #   3. fetcher returned None (rare deterministic decode failure on
+        #      genuinely broken contracts), or stale None inherited from the
+        #      old buggy code that pre-dates the tightened helpers
+        # Real ERC20 tokens always resolve on retry; the per-call cost of
+        # retrying genuinely broken contracts is one RPC, acceptable.
+        # This also auto-migrates pre-tightened-helper cache entries on disk:
+        # any null value gets refreshed and rewritten on the next access.
         cached = self.token_metadata_cache.get(address, chain_id) or {}
         fields = (
             ("symbol", "0x95d89b41", self._raw_call_string_or_bytes32),
             ("decimals", "0x313ce567", self._raw_call_uint8),
             ("name", "0x06fdde03", self._raw_call_string_or_bytes32),
         )
-        if all(k in cached for k, _, _ in fields):
+        if all(cached.get(k) is not None for k, _, _ in fields):
             return dict(cached)
-        result = dict(cached)
+        result = {k: v for k, v in cached.items() if v is not None}
         for field, selector, fetcher in fields:
-            if field in result:
+            if result.get(field) is not None:
                 continue
             try:
-                result[field] = fetcher(address, selector, chain_id, allow_default_rpc)
+                value = fetcher(address, selector, chain_id, allow_default_rpc)
             except _TransientCallError:
-                # Skip caching this field; next call will retry.
-                pass
+                continue
+            if value is not None:
+                result[field] = value
         self.token_metadata_cache.set(address, chain_id, dict(result))
-        # Surface every field (filling unresolved ones with None for backwards-
-        # compat with the previous return shape).
         for field, _, _ in fields:
             result.setdefault(field, None)
         return result
