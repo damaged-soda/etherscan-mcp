@@ -87,7 +87,7 @@ codex mcp add etherscan-mcp \
 - **块号输入兼容**：`start_block` / `end_block` / `from_block` / `to_block` 接受整数、十进制字符串、`0x` 十六进制字符串。非法输入报错提示"十进制或 0x 前缀"。
 - **未验证合约**：`getsourcecode` 返回典型未验证文案（如 `Contract source code not verified`）时，明确报错"合约未验证导致 ABI 不可用"，附 address/network/chain_id 与截断摘要。
 - **`call_function`**：基础校验 0x / 偶数字节 / 至少 4 字节 selector；ABI 命中时按 outputs 解码（含 tuple / 数组），数值类支持 `decimals` hint 计算 `value_scaled`；ABI 加载但 selector 缺失时软失败放行 raw `eth_call`，`decoded.warning` 提示；无参函数可省略括号（`readTokens` 等价 `readTokens()`）。
-- **`call_function_series`**：对同一个 `data` 或 `function+args` 在 `[from_block, to_block]` 按 `stride` 做历史 `eth_call` 序列采样，返回 `series[] = {block_number, block_tag, data, decoded}`。只走 JSON-RPC batch，不回退 Etherscan；必须配置对应链的 archive `RPC_URL_<chainid>`。`batch_size` 默认 25，用来控制单次 JSON-RPC batch 大小；单次最多 10000 个采样点，超出要加大 `stride` 或缩小 block range。
+- **`call_function_series`**：对同一个 `data` 或 `function+args` 从 `from_block` 开始、按 `stride` 递增采样，直到下一个点会超过 `to_block` 为止；例如 `from_block=10,to_block=15,stride=3` 采样 `10,13`，不会强制补尾块 `15`。返回 `series[] = {block_number, block_tag, data, decoded}`。只走 JSON-RPC batch，不回退 Etherscan；必须配置对应链的 archive `RPC_URL_<chainid>`。`batch_size` 默认 25，用来控制单次 JSON-RPC batch 大小；单次最多 10000 个采样点，超出要加大 `stride` 或缩小 block range。
 - **代理感知**：`fetch_contract` 解析 Etherscan Proxy/Implementation 元数据，规范化实现地址写入 proxy cache；`call_function` ABI 选择优先实现合约（来自元数据或 EIP-1967 detect_proxy）；探测异常不缓存"非代理"，避免假阴性；缺实现 ABI 不阻断调用，仅解码受限。
 - **`convert`**：`from_unit` / `to_unit` 支持 `hex` / `dec` / `human` / `wei` / `gwei` / `eth`，`decimals` 默认 18；内部用整数 / Decimal 避免浮点丢精度；分数精度超限会报错。
 - **`get_transaction`**：优先 RPC 的 `eth_getTransactionByHash` + `eth_getTransactionReceipt`，未配 RPC 回退 Etherscan proxy；`tx_hash` 需 `0x` + 64 hex。
