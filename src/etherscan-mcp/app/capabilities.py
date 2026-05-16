@@ -66,6 +66,12 @@ GLOBAL_CAVEATS: List[Dict[str, str]] = [
         "workaround": "配 archive 节点的 `RPC_URL_<chainid>`（Alchemy / Quicknode / drpc / Ankr / 自建 erigon）；普通 full node 也不行，要 archive。",
     },
     {
+        "tool": "call_function_series",
+        "status": STATUS_REQUIRES_RPC,
+        "reason": "历史区块序列 eth_call 只走 JSON-RPC batch；Etherscan `module=proxy` 不能可靠读取历史 state。",
+        "workaround": "配 archive 节点的 `RPC_URL_<chainid>`（Alchemy / Quicknode / drpc / Ankr / 自建 erigon）；普通 full node 也不行，要 archive。",
+    },
+    {
         "tool": "get_storage_at",
         "status": STATUS_REQUIRES_RPC,
         "reason": "Etherscan `module=proxy` (eth_getStorageAt) 同样不支持历史 block_tag；某些链节点会返回 `historical state ... not available`，但路径本身需要 archive。",
@@ -216,8 +222,9 @@ def caveats_for(chain_id: str, rpc_configured: bool) -> List[Dict[str, Any]]:
     rpc_configured=True; everything else stays as-is (paid_tier_only /
     degraded / unsupported are not RPC-fixable).
 
-    Note: `GLOBAL_CAVEATS` for `call_function` / `get_storage_at` flagging
-    historical-block-tag support flips to `ok` when ANY RPC_URL is configured,
+    Note: `GLOBAL_CAVEATS` for `call_function` / `call_function_series` /
+    `get_storage_at` flagging historical-block-tag support flips to `ok`
+    when ANY RPC_URL is configured,
     but the workaround text reminds callers that the configured node must be
     an archive node (we can't introspect URL to verify that).
     """

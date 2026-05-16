@@ -21,6 +21,8 @@ DEFAULT_PAGE = 1
 DEFAULT_OFFSET = 100
 DEFAULT_INLINE_SOURCE_LIMIT = 20000
 RPC_LOGS_BLOCK_STEP = 2000
+DEFAULT_CALL_SERIES_BATCH_SIZE = 25
+MAX_CALL_SERIES_POINTS = 10000
 
 # Allowed values for `get_transaction_summary(compact=True, flow_scope=...)`:
 # - "user":        keep only flow rows whose address == tx.from
@@ -1007,6 +1009,100 @@ class ContractService:
             "block_tag": tag,
             "data": result,
             "decoded": decoded,
+        }
+        if function:
+            response["function"] = function
+        if args is not None:
+            response["args"] = args
+        return response
+
+    def call_function_series(
+        self,
+        address: str,
+        from_block: Union[int, str],
+        to_block: Union[int, str],
+        stride: Optional[int] = 1,
+        data: Optional[str] = None,
+        network: Optional[str] = None,
+        function: Optional[str] = None,
+        args: Optional[List[Any]] = None,
+        decimals: Optional[Any] = None,
+        batch_size: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        normalized_address, network_label, chain_id = self._prepare_context(address, network)
+        start_block = self._parse_block_number(from_block, 0, "from_block")
+        end_block = self._parse_block_number(to_block, 0, "to_block")
+        if start_block > end_block:
+            raise ValueError("from_block cannot be greater than to_block.")
+
+        stride_val = self._normalize_positive_int(stride, 1, "stride")
+        if stride_val <= 0:
+            raise ValueError("stride must be a positive integer.")
+        batch_size_val = self._normalize_positive_int(
+            batch_size, DEFAULT_CALL_SERIES_BATCH_SIZE, "batch_size"
+        )
+        if batch_size_val <= 0:
+            raise ValueError("batch_size must be a positive integer.")
+        point_count = ((end_block - start_block) // stride_val) + 1
+        if point_count > MAX_CALL_SERIES_POINTS:
+            raise ValueError(
+                f"call_function_series would issue {point_count} eth_call requests; "
+                f"maximum is {MAX_CALL_SERIES_POINTS}. Increase stride or narrow the block range."
+            )
+
+        allow_default_rpc = network is None
+        rpc = self._get_rpc_client(chain_id, allow_default_rpc)
+        if not rpc:
+            self._require_rpc_for_historical_tag(hex(start_block), chain_id, "call_function_series")
+
+        normalized_data, func_meta = self._prepare_call_data(
+            data=data,
+            function=function,
+            args=args,
+            address=normalized_address,
+            chain_id=chain_id,
+            network_label=network_label,
+        )
+
+        series: List[Dict[str, Any]] = []
+        current = start_block
+        while current <= end_block:
+            chunk_blocks: List[int] = []
+            while current <= end_block and len(chunk_blocks) < batch_size_val:
+                chunk_blocks.append(current)
+                current += stride_val
+
+            params_list = [
+                [{"to": normalized_address, "data": normalized_data}, hex(block_number)]
+                for block_number in chunk_blocks
+            ]
+            raw_results = rpc.batch_call("eth_call", params_list)
+            if len(raw_results) != len(chunk_blocks):
+                raise ValueError("RPC error: eth_call batch returned unexpected result count.")
+
+            for block_number, raw_result in zip(chunk_blocks, raw_results):
+                if not isinstance(raw_result, str):
+                    raise ValueError("RPC error: eth_call returned unexpected result.")
+                result = self._normalize_hex_string(raw_result, "result")
+                series.append(
+                    {
+                        "block_number": block_number,
+                        "block_tag": hex(block_number),
+                        "data": result,
+                        "decoded": self._decode_call_result(result, func_meta, decimals),
+                    }
+                )
+
+        response: Dict[str, Any] = {
+            "address": normalized_address,
+            "network": network_label,
+            "chain_id": chain_id,
+            "from_block": start_block,
+            "to_block": end_block,
+            "stride": stride_val,
+            "batch_size": batch_size_val,
+            "count": len(series),
+            "series": series,
         }
         if function:
             response["function"] = function

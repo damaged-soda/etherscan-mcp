@@ -98,9 +98,100 @@ class RpcClient:
             raise last_error
         raise RuntimeError("RPC request failed without raising an exception.")
 
+    def batch_call(self, method: str, params_list: List[List[Any]]) -> List[Any]:
+        if not isinstance(method, str) or not method.strip():
+            raise ValueError("method must be a non-empty string.")
+        if not isinstance(params_list, list):
+            raise ValueError("params_list must be a list.")
+        if not params_list:
+            return []
+
+        payload = []
+        request_ids: List[int] = []
+        for params in params_list:
+            if not isinstance(params, list):
+                raise ValueError("each params entry must be a list.")
+            request_id = self._next_id
+            self._next_id += 1
+            request_ids.append(request_id)
+            payload.append(
+                {
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": method,
+                    "params": params,
+                }
+            )
+
+        last_error: Optional[Exception] = None
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                response = self.session.post(
+                    self.rpc_url,
+                    json=payload,
+                    timeout=self.timeout,
+                )
+                if response.status_code in {429} or response.status_code >= 500:
+                    if attempt < self.max_retries:
+                        time.sleep(self.backoff_seconds * attempt)
+                        continue
+
+                response.raise_for_status()
+                data = response.json()
+                if not isinstance(data, list):
+                    raise ValueError("Unexpected JSON-RPC batch response (non-list).")
+
+                by_id: Dict[int, Dict[str, Any]] = {}
+                for item in data:
+                    if not isinstance(item, dict):
+                        raise ValueError("Unexpected JSON-RPC batch response item.")
+                    item_id = item.get("id")
+                    if not isinstance(item_id, int):
+                        raise ValueError("Unexpected JSON-RPC batch response item id.")
+                    by_id[item_id] = item
+
+                results: List[Any] = []
+                for request_id in request_ids:
+                    item = by_id.get(request_id)
+                    if item is None:
+                        raise ValueError(f"Unexpected JSON-RPC batch response (missing id {request_id}).")
+                    error_obj = item.get("error")
+                    if isinstance(error_obj, dict):
+                        code = error_obj.get("code")
+                        message = error_obj.get("message")
+                        err_data = error_obj.get("data")
+                        parts: list[str] = []
+                        if code is not None:
+                            parts.append(f"code {code}")
+                        if message:
+                            parts.append(str(message))
+                        if err_data:
+                            parts.append(str(err_data))
+                        detail = ": ".join(parts) if parts else "unknown error"
+                        raise ValueError(f"RPC error: batch item {request_id}: {detail}.")
+                    if "result" not in item:
+                        raise ValueError(f"Unexpected JSON-RPC batch response (missing result for id {request_id}).")
+                    results.append(item.get("result"))
+                return results
+            except requests.RequestException as exc:
+                last_error = exc
+                if attempt < self.max_retries:
+                    time.sleep(self.backoff_seconds * attempt)
+                    continue
+                raise
+            except ValueError as exc:
+                last_error = exc
+                if attempt < self.max_retries:
+                    time.sleep(self.backoff_seconds * attempt)
+                    continue
+                raise
+
+        if last_error:
+            raise last_error
+        raise RuntimeError("RPC batch request failed without raising an exception.")
+
     def get_block_number(self) -> int:
         result = self.call("eth_blockNumber", [])
         if not isinstance(result, str) or not result.startswith("0x"):
             raise ValueError("RPC error: eth_blockNumber returned unexpected result.")
         return int(result, 16)
-
