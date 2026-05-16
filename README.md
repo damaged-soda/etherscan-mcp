@@ -48,7 +48,7 @@ codex mcp add etherscan-mcp \
   -- bash -lc "cd `pwd`/src/etherscan-mcp && python -m app.mcp_server --transport stdio"
 ```
 
-`RPC_URL_1` 推荐配 archive 节点（Alchemy / Quicknode / drpc / Ankr / 自建 erigon），`call_function` / `get_storage_at` 才能按历史 block_tag 读链上 state；普通 full node 不带 archive 不行（详见 [已知限制](#已知限制)）。
+`RPC_URL_1` 推荐配 archive 节点（Alchemy / Quicknode / drpc / Ankr / 自建 erigon），`call_function` / `call_function_series` / `get_storage_at` 才能按历史 block_tag 读链上 state；普通 full node 不带 archive 不行（详见 [已知限制](#已知限制)）。
 
 工具列表变更后需在 Codex / Claude Code 侧重新连接 MCP server。常用主网测试地址：USDT `0xdAC17F958D2ee523a2206206994597C13D831ec7`、USDC `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48`。
 
@@ -73,7 +73,7 @@ codex mcp add etherscan-mcp \
 | Contracts | `fetch_contract`、`get_source_file`、`get_contract_creation`、`detect_proxy` |
 | Chains | `list_chains`、`resolve_chain` |
 | Transactions / Transfers / Logs | `list_transactions`、`list_token_transfers`、`query_logs` |
-| State / Calls | `get_storage_at`、`call_function`、`encode_function_data`、`keccak` |
+| State / Calls | `get_storage_at`、`call_function`、`call_function_series`、`encode_function_data`、`keccak` |
 | Blocks / Tx | `get_block_by_number`、`get_block_time_by_number`、`get_transaction`、`get_transaction_summary` |
 | Helpers | `convert` |
 
@@ -83,10 +83,11 @@ codex mcp add etherscan-mcp \
 
 - **`network` 入参**：支持数字 chainid（`"42161"`，最稳定）、官方链名 / 模糊匹配、轻量别名（`arb`、`arb-sepolia`、`bsc`→`56`、`base`→`8453`）。歧义时强制要求 chainid。
 - **默认网络安全**：未显式传 `network` 且默认 `NETWORK` 无法解析、`CHAIN_ID` 也未设置时，service 直接报错，避免误用主网。
-- **数组形态参数**：`call_function.args` / `encode_function_data.args` / `query_logs.topics` 必须是数组。MCP 入口层会把标量自动包成单元素数组；字符串 / bytes / 对象会直接报错并提示示例，避免被逐字符拆分。
+- **数组形态参数**：`call_function.args` / `call_function_series.args` / `encode_function_data.args` / `query_logs.topics` 必须是数组。MCP 入口层会把标量自动包成单元素数组；字符串 / bytes / 对象会直接报错并提示示例，避免被逐字符拆分。
 - **块号输入兼容**：`start_block` / `end_block` / `from_block` / `to_block` 接受整数、十进制字符串、`0x` 十六进制字符串。非法输入报错提示"十进制或 0x 前缀"。
 - **未验证合约**：`getsourcecode` 返回典型未验证文案（如 `Contract source code not verified`）时，明确报错"合约未验证导致 ABI 不可用"，附 address/network/chain_id 与截断摘要。
 - **`call_function`**：基础校验 0x / 偶数字节 / 至少 4 字节 selector；ABI 命中时按 outputs 解码（含 tuple / 数组），数值类支持 `decimals` hint 计算 `value_scaled`；ABI 加载但 selector 缺失时软失败放行 raw `eth_call`，`decoded.warning` 提示；无参函数可省略括号（`readTokens` 等价 `readTokens()`）。
+- **`call_function_series`**：对同一个 `data` 或 `function+args` 在 `[from_block, to_block]` 按 `stride` 做历史 `eth_call` 序列采样，返回 `series[] = {block_number, block_tag, data, decoded}`。只走 JSON-RPC batch，不回退 Etherscan；必须配置对应链的 archive `RPC_URL_<chainid>`。`batch_size` 默认 25，用来控制单次 JSON-RPC batch 大小。
 - **代理感知**：`fetch_contract` 解析 Etherscan Proxy/Implementation 元数据，规范化实现地址写入 proxy cache；`call_function` ABI 选择优先实现合约（来自元数据或 EIP-1967 detect_proxy）；探测异常不缓存"非代理"，避免假阴性；缺实现 ABI 不阻断调用，仅解码受限。
 - **`convert`**：`from_unit` / `to_unit` 支持 `hex` / `dec` / `human` / `wei` / `gwei` / `eth`，`decimals` 默认 18；内部用整数 / Decimal 避免浮点丢精度；分数精度超限会报错。
 - **`get_transaction`**：优先 RPC 的 `eth_getTransactionByHash` + `eth_getTransactionReceipt`，未配 RPC 回退 Etherscan proxy；`tx_hash` 需 `0x` + 64 hex。
@@ -104,7 +105,7 @@ codex mcp add etherscan-mcp \
 - **`list_transactions` / `list_token_transfers` 在部分 free tier 链上返回空**：对应 Etherscan 的 `txlist` / `tokentx` indexed 端点，原生 JSON-RPC 没有等价能力（`eth_*` 只能按 hash/block 拿，没法按 address 倒查历史）。Base 等链 free tier 直接返回空，目前没有 fallback。后续如有需要要走 BaseScan native key 或第三方索引服务（Covalent / Alchemy enhanced API），单独立项。`status=paid_tier_only`。
 - **`get_contract_creation` 在 BSC 等链可能 NOTOK**：建议配 `RPC_URL_<chainid>` 启用 RPC 二分回退；internal create 场景可能仅返回 `block_number/timestamp`（`complete=false`），且需要 archive / full-history 节点。`status=degraded`。
 - **`module=proxy` 在 Base / BSC 等链 free tier 受限**：会报 `Free API access is not supported for this chain`，配 `RPC_URL_<chainid>` 绕开。`status=requires_rpc_url`，配上 RPC 后 `status_effective` 自动降级为 `ok`。
-- **`call_function` / `get_storage_at` 历史 block_tag 全链不支持（chain-agnostic）**：Etherscan `module=proxy` 对非 `latest|earliest|pending` 的 block_tag **静默忽略**，永远返回 latest state（debug 起来很坑），所有链都一样。当前代码当 RPC 未配且传了历史 block_tag 时**显式报错**（不再静默 fallback）。修复方式：配 archive 节点的 `RPC_URL_<chainid>`，**普通 full node 不够要 archive**（Alchemy / Quicknode / drpc / Ankr / 自建 erigon）。`status=requires_rpc_url`，登记在 `GLOBAL_CAVEATS`，全链生效。`status_effective` 在 `RPC_URL_<chainid>` 配上后会降级为 `ok`，但 archive vs full node 没法从 URL 自动检测，**配错节点会运行时报"historical state not available"**。
+- **`call_function` / `call_function_series` / `get_storage_at` 历史 state 全链不支持（chain-agnostic）**：Etherscan `module=proxy` 对非 `latest|earliest|pending` 的 block_tag **静默忽略**，永远返回 latest state（debug 起来很坑），所有链都一样。当前代码当 RPC 未配且要读历史 state 时**显式报错**（不再静默 fallback）。修复方式：配 archive 节点的 `RPC_URL_<chainid>`，**普通 full node 不够要 archive**（Alchemy / Quicknode / drpc / Ankr / 自建 erigon）。`status=requires_rpc_url`，登记在 `GLOBAL_CAVEATS`，全链生效。`status_effective` 在 `RPC_URL_<chainid>` 配上后会降级为 `ok`，但 archive vs full node 没法从 URL 自动检测，**配错节点会运行时报"historical state not available"**。
 - **新链 / 未列入 caveat 矩阵的链**（HyperEVM、Plasma 等）：默认按"无 caveat"处理。先用 `list_chains` 确认 Etherscan V2 是否覆盖（status=1 为正常），跑任务踩坑后回头补 `capabilities.py`。
 
 ## 配置（环境变量）
@@ -117,7 +118,7 @@ codex mcp add etherscan-mcp \
 | `CHAIN_ID` | — | 硬覆盖 network 推导出的 chainid |
 | `ETHERSCAN_CHAINLIST_URL` | `https://api.etherscan.io/v2/chainlist` | 链清单端点 |
 | `CHAINLIST_TTL_SECONDS` | `3600` | 链清单缓存 TTL |
-| `RPC_URL_<chainid>` | — | 指定链的 JSON-RPC HTTP 端点。BSC/Base 等绕 free-tier proxy 限制配普通 full node 即可；`call_function` / `get_storage_at` 走历史 block_tag 必须配 **archive 节点**（Alchemy / Quicknode / drpc / Ankr / 自建 erigon）。常用 chain：`RPC_URL_1` (mainnet)、`RPC_URL_42161` (arbitrum)、`RPC_URL_8453` (base)、`RPC_URL_10` (optimism)、`RPC_URL_137` (polygon)、`RPC_URL_56` (bsc) |
+| `RPC_URL_<chainid>` | — | 指定链的 JSON-RPC HTTP 端点。BSC/Base 等绕 free-tier proxy 限制配普通 full node 即可；`call_function` / `call_function_series` / `get_storage_at` 走历史 state 必须配 **archive 节点**（Alchemy / Quicknode / drpc / Ankr / 自建 erigon）。常用 chain：`RPC_URL_1` (mainnet)、`RPC_URL_42161` (arbitrum)、`RPC_URL_8453` (base)、`RPC_URL_10` (optimism)、`RPC_URL_137` (polygon)、`RPC_URL_56` (bsc) |
 | `RPC_<chainid>` | — | `RPC_URL_<chainid>` 的兼容别名 |
 | `RPC_URL` | — | 默认链的 JSON-RPC 端点（仅未显式传 `network` 时生效；显式传 `network` 推荐用 `RPC_URL_<chainid>` 避免误绑定） |
 | `REQUEST_TIMEOUT` | `10` | 单次请求超时（秒） |
@@ -126,9 +127,9 @@ codex mcp add etherscan-mcp \
 | `ETHERSCAN_MCP_CACHE_DIR` | `~/.cache/etherscan-mcp` | 持久化 token metadata + contract name 的目录；落 `token_metadata.json` 与 `contract_names.json`，按 `(chainid, address)` 键。**进程重启后避免重新拉同一批 token / 同一批合约名**，批量扫地址收益最明显。设空字符串完全禁用持久化。 |
 | `METADATA_FETCH_CONCURRENCY` | `5` | `get_transaction_summary` 拉 token metadata（symbol/decimals/name）+ contract name 时的线程池并发数。冷启动一笔 tx 涉及 9 个新 token + 17 个未注解地址时，从串行 ~40s 降到 ~6-8s。设大触发更多 429 / rate limit；`1` 退化回串行。 |
 
-读链类工具（`call_function` / `get_storage_at` / `detect_proxy` / `query_logs` / `get_block_by_number` / `get_block_time_by_number` / `get_transaction`）在配了对应 `RPC_URL_<chainid>` 时优先走 RPC；未配则保持原行为，回退 Etherscan `module=proxy`。
+读链类工具（`call_function` / `call_function_series` / `get_storage_at` / `detect_proxy` / `query_logs` / `get_block_by_number` / `get_block_time_by_number` / `get_transaction`）在配了对应 `RPC_URL_<chainid>` 时优先走 RPC；未配则保持原行为，回退 Etherscan `module=proxy`。例外：`call_function_series` 永远只走 RPC，因为它的语义就是历史区块序列采样。
 
-例外：`call_function` / `get_storage_at` 在传了历史 block_tag（hex / decimal block number）但 RPC 未配时，**显式报错**而不再回退 `module=proxy` —— Etherscan proxy 对历史 tag 静默忽略并返回 latest state，回退会让历史读看起来"成功了"实际上是 latest，比报错更坑。要走历史 block_tag 必须配 archive 节点（详见 [已知限制](#已知限制)）。
+例外：`call_function` / `get_storage_at` 在传了历史 block_tag（hex / decimal block number）但 RPC 未配时，**显式报错**而不再回退 `module=proxy`；`call_function_series` 是历史序列工具，始终要求 RPC —— Etherscan proxy 对历史 tag 静默忽略并返回 latest state，回退会让历史读看起来"成功了"实际上是 latest，比报错更坑。要走历史 block_tag 必须配 archive 节点（详见 [已知限制](#已知限制)）。
 
 ## 命名约定
 

@@ -177,6 +177,39 @@ def call_function(
 
 
 @server.tool(
+    name="call_function_series",
+    title="Call Read-Only Function Series",
+    description="Call the same read-only contract function across a historical block range via JSON-RPC batch eth_call. Requires RPC_URL_<chainid> backed by an archive node. `args` must be an array.",
+)
+def call_function_series(
+    address: str,
+    from_block: Union[int, str],
+    to_block: Union[int, str],
+    stride: int = 1,
+    data: Optional[str] = None,
+    network: Optional[str] = None,
+    function: Optional[str] = None,
+    args: Optional[Any] = None,
+    decimals: Optional[Any] = None,
+    batch_size: Optional[int] = None,
+) -> dict:
+    svc = _get_service()
+    normalized_args = _normalize_array_param(args, "args")
+    return svc.call_function_series(
+        address,
+        from_block,
+        to_block,
+        stride,
+        data,
+        network,
+        function,
+        normalized_args,
+        decimals,
+        batch_size,
+    )
+
+
+@server.tool(
     name="encode_function_data",
     title="Encode Function Call",
     description="Compute selector and ABI-encoded call data from function signature and arguments. `args` must be an array.",
