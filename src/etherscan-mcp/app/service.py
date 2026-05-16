@@ -22,6 +22,7 @@ DEFAULT_OFFSET = 100
 DEFAULT_INLINE_SOURCE_LIMIT = 20000
 RPC_LOGS_BLOCK_STEP = 2000
 DEFAULT_CALL_SERIES_BATCH_SIZE = 25
+MAX_CALL_SERIES_POINTS = 10000
 
 # Allowed values for `get_transaction_summary(compact=True, flow_scope=...)`:
 # - "user":        keep only flow rows whose address == tx.from
@@ -1042,6 +1043,12 @@ class ContractService:
         )
         if batch_size_val <= 0:
             raise ValueError("batch_size must be a positive integer.")
+        point_count = ((end_block - start_block) // stride_val) + 1
+        if point_count > MAX_CALL_SERIES_POINTS:
+            raise ValueError(
+                f"call_function_series would issue {point_count} eth_call requests; "
+                f"maximum is {MAX_CALL_SERIES_POINTS}. Increase stride or narrow the block range."
+            )
 
         allow_default_rpc = network is None
         rpc = self._get_rpc_client(chain_id, allow_default_rpc)
