@@ -357,7 +357,7 @@ def main() -> None:
     parser.add_argument(
         "--port",
         type=int,
-        default=8000,
+        default=8702,
         help="Port for SSE/HTTP transports.",
     )
     parser.add_argument(
@@ -365,11 +365,17 @@ def main() -> None:
         default="/",
         help="Mount path for SSE transport (only when transport=sse).",
     )
+    parser.add_argument(
+        "--streamable-http-path",
+        default="/mcp",
+        help="HTTP path for streamable HTTP transport.",
+    )
     args = parser.parse_args()
 
     # FastMCP uses host/port only for SSE/HTTP transports; stdio ignores them.
     server.settings.host = args.host
     server.settings.port = args.port
+    server.settings.streamable_http_path = args.streamable_http_path
 
     if args.transport == "sse":
         server.run(transport="sse", mount_path=args.mount_path)
