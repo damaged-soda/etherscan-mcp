@@ -48,6 +48,13 @@ codex mcp add etherscan-mcp \
   -- bash -lc "cd `pwd`/src/etherscan-mcp && python -m app.mcp_server --transport stdio"
 ```
 
+本机长驻 daemon 可用 streamable HTTP：
+
+```bash
+cd src/etherscan-mcp
+python -m app.mcp_server --transport streamable-http --host 127.0.0.1 --port 8702 --streamable-http-path /mcp
+```
+
 `RPC_URL_1` 推荐配 archive 节点（Alchemy / Quicknode / drpc / Ankr / 自建 erigon），`call_function` / `call_function_series` / `get_storage_at` 才能按历史 block_tag 读链上 state；普通 full node 不带 archive 不行（详见 [已知限制](#已知限制)）。
 
 工具列表变更后需在 Codex / Claude Code 侧重新连接 MCP server。常用主网测试地址：USDT `0xdAC17F958D2ee523a2206206994597C13D831ec7`、USDC `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48`。
