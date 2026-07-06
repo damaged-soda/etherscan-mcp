@@ -26,18 +26,46 @@ pip install -r src/etherscan-mcp/requirements.txt
 
 ## CLI
 
+CLI 是主要接口（TOOLING 决策 2026-07-05：能力经 CLI + skill 暴露），子命令与 MCP tools 一一对应、直调 `ContractService` 内核。数组类参数（`--args` / `--topics`）一律 JSON 数组字符串，topic 通配位用 `null`。
+
 ```bash
-ETHERSCAN_API_KEY=<key> python -m app fetch --address <contract> [--network <chain>] [--inline-limit N|--force-inline]
+ETHERSCAN_API_KEY=<key> python -m app <subcommand> [options]   # python -m app --help 看环境变量与子命令全表
+
+# 合约
+python -m app fetch --address <contract> [--network <chain>] [--inline-limit N|--force-inline]
 python -m app get-source-file --address <contract> --filename <file> [--offset N --length M]
+python -m app get-contract-creation --address <contract>
+python -m app detect-proxy --address <contract>
+
+# 索引类查询
+python -m app list-transactions --address <addr> [--start-block N --end-block M --page P --offset O --sort asc|desc]
+python -m app list-token-transfers --address <addr> [--token-type erc20|erc721|erc1155] [分页参数同上]
+python -m app query-logs --address <contract> --topics '["0x..."]' [--from-block N --to-block latest --page P --offset O]
+
+# 链上状态（需 RPC_URL / RPC_URL_<chainid>）
+python -m app get-storage-at --address <contract> --slot <slot> [--block-tag latest|N|0x..]
+python -m app call-function --address <contract> --function 'balanceOf(address)' --args '["0x..."]' [--decimals 6]
+python -m app call-function-series --address <contract> --function 'totalSupply()' --from-block N --to-block M --stride K
+
+# 交易 / 区块
+python -m app get-transaction --tx-hash <0x..>
+python -m app get-transaction-summary --tx-hash <0x..> [--compact --flow-scope user|user_router|all] [--no-decode-transfers --no-annotate-contracts]
 python -m app get-block --block <latest|dec|0x> [--full-transactions] [--tx-hashes-only]
 python -m app get-block-time --block <latest|dec|0x>
+
+# 工具
+python -m app encode-function-data --function 'transfer(address,uint256)' --args '["0x...", 1000]'
+python -m app keccak --value 'Transfer(address,address,uint256)' [--input-type text|hex|bytes]
+python -m app convert --value 0x1bc16d674ec80000 --from hex --to eth [--decimals 18]
 python -m app list-chains [--include-degraded]
 python -m app resolve-chain --network <name|alias|chainid>
 ```
 
 源码超内联阈值（默认 20000 字符）且未强制时，`source_files` 仅返回摘要（filename/length/sha256/inline=false）并附 `source_omitted`/`source_omitted_reason`，需要原文用 `get-source-file` 分段拿。
 
-## MCP（Codex 本地注册示例）
+## MCP（能力保留，本机注册已退役）
+
+> 2026-07-07 起本机不再注册本仓 MCP（TOOLING 决策：存量 MCP 逐仓退役，能力走 CLI + skill）。server 代码保留，其他环境如需注册可参考下例。
 
 ```bash
 codex mcp add etherscan-mcp \
