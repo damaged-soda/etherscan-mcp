@@ -9,11 +9,11 @@ from .service import ContractService
 
 # RPC_URL_<chainid> 常内嵌 api-key(Alchemy / drpc 等)。错误信息原样打印完整
 # URL 会把 key 带进 stderr / 日志 / transcript,截到 scheme://host、其余换 /***。
-_URL_RE = re.compile(r"(https?://[^/\s?#]+)[^\s]*")
+_URL_RE = re.compile(r"(https?://)(?:[^@/\s?#]+@)?([^/\s?#]+)[^\s]*")
 
 
 def _redact_secrets(text: str) -> str:
-    return _URL_RE.sub(r"\1/***", text)
+    return _URL_RE.sub(r"\1\2/***", text)
 
 _ENV_EPILOG = """\
 environment:
