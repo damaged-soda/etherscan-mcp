@@ -1,10 +1,19 @@
 import argparse
 import json
+import re
 import sys
 from typing import Any, List, Optional
 
 from .config import load_config
 from .service import ContractService
+
+# RPC_URL_<chainid> 常内嵌 api-key(Alchemy / drpc 等)。错误信息原样打印完整
+# URL 会把 key 带进 stderr / 日志 / transcript,截到 scheme://host、其余换 /***。
+_URL_RE = re.compile(r"(https?://)(?:[^@/\s?#]+@)?([^/\s?#]+)[^\s]*")
+
+
+def _redact_secrets(text: str) -> str:
+    return _URL_RE.sub(r"\1\2/***", text)
 
 _ENV_EPILOG = """\
 environment:
@@ -452,7 +461,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         result = args.run(service, args)
         print(json.dumps(result, indent=2))
     except Exception as exc:  # pylint: disable=broad-except
-        print(f"Error: {exc}", file=sys.stderr)
+        print(f"Error: {_redact_secrets(str(exc))}", file=sys.stderr)
         sys.exit(1)
 
 
