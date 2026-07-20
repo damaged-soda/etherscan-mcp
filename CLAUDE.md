@@ -4,7 +4,7 @@
 
 ## 本仓职责
 
-CLI + MCP server，封装 Etherscan API V2（ABI / 源码 / 索引类查询）+ EVM JSON-RPC（`eth_call` / `eth_getStorageAt` / `eth_getLogs` / 区块 / 交易等只读调用），用于合约研判和链上数据抓取。本机以 `etherscan` CLI 暴露（wrapper 在 `~/ns/personal/bin/etherscan`，凭据从 0600 文件注入；skill 正本在 `~/ns/personal/skills/etherscan/`）；MCP 注册已于 2026-07-07 退役（决策见 `~/work/charter/TOOLING.md`），server 代码保留。
+CLI + MCP server，封装 Etherscan API V2（ABI / 源码 / 索引类查询）+ EVM JSON-RPC（`eth_call` / `eth_getStorageAt` / `eth_getLogs` / 区块 / 交易等只读调用），用于合约研判和链上数据抓取。本机以 `etherscan` CLI 暴露（wrapper 在 `~/ns/personal/bin/etherscan`，凭据从 0600 文件注入；skill 正本在 `~/ns/personal/skills/etherscan/`）；MCP 注册已于 2026-07-07 退役（决策见 `~/work/meta/charter/TOOLING.md`），server 代码保留。
 
 代码、模块结构、tool 清单、参数约定、环境变量见 [README.md](README.md)。
 
