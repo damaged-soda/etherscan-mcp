@@ -3,8 +3,10 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Optional
+from urllib.parse import quote
 
 from .network_presets import (
+    alchemy_rpc_urls,
     default_explorer_api_urls,
     default_rpc_url_sources,
     default_rpc_urls,
@@ -85,6 +87,13 @@ def _load_rpc_urls_from_env() -> tuple[Dict[str, str], Dict[str, str]]:
     """Load chainid -> RPC URL mapping plus builtin/env provenance."""
     rpc_urls = default_rpc_urls()
     rpc_url_sources = default_rpc_url_sources()
+    alchemy_api_key = (os.getenv("ALCHEMY_API_KEY") or "").strip()
+    if alchemy_api_key:
+        encoded_key = quote(alchemy_api_key, safe="")
+        for chain_id, url in alchemy_rpc_urls(encoded_key).items():
+            rpc_urls[chain_id] = url
+            rpc_url_sources[chain_id] = "alchemy"
+
     candidates: Dict[str, Dict[str, str]] = {}
     for key, value in os.environ.items():
         match = _RPC_URL_ENV_RE.match(key)

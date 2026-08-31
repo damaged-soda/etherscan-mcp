@@ -86,7 +86,7 @@ RPC_URL_4663=https://<provider-endpoint> python -m app call-function-series \
   --from-block 100000 --to-block 110000 --stride 100
 ```
 
-内置公共 RPC 有速率限制，且不承诺 archive 能力；`resolve-chain` 会返回 `rpc_available=true`、`rpc_source=builtin`、`rpc_configured=false`，历史 state caveat 不会被误标成 `ok`。环境变量覆盖时 `rpc_source=env`；直接构造 `Config` 注入 URL 时为 `programmatic`，两者都算显式配置。`call_function_series` 或指定历史 `block_tag` 时仍应设置 `RPC_URL_4663` / `RPC_URL_46630` 为 archive endpoint。主网 Blockscout 偶尔会对非浏览器客户端返回 Cloudflare challenge；可重试或用 `EXPLORER_API_URL_4663` 覆盖为可直连的兼容索引端点。Robinhood Chain 与 Robinhood 券商 / crypto account API 相互独立，本仓不访问账户、不下单。
+若设置 `ALCHEMY_API_KEY`，主网 / 测试网会优先使用官方 Alchemy endpoint，并返回 `rpc_source=alchemy`、`rpc_configured=true`；显式 `RPC_URL_4663` / `RPC_URL_46630` 仍具有最高优先级。未设置时才回退内置公共 RPC，此时 `rpc_available=true`、`rpc_source=builtin`、`rpc_configured=false`，历史 state caveat 不会被误标成 `ok`。环境变量覆盖时 `rpc_source=env`；直接构造 `Config` 注入 URL 时为 `programmatic`。`call_function_series` 或指定历史 `block_tag` 仍取决于所用 Alchemy plan / endpoint 是否提供 archive state。主网 Blockscout 偶尔会对非浏览器客户端返回 Cloudflare challenge；可重试或用 `EXPLORER_API_URL_4663` 覆盖为可直连的兼容索引端点。Robinhood Chain 与 Robinhood 券商 / crypto account API 相互独立，本仓不访问账户、不下单。
 
 ## MCP（能力保留，本机注册已退役）
 
@@ -184,6 +184,7 @@ python -m app.mcp_server --transport streamable-http --host 127.0.0.1 --port 870
 | `RPC_URL_<chainid>` | Robinhood 两条链有内置公共端点，其余 — | 指定链的 JSON-RPC HTTP 端点。BSC/Base 等绕 free-tier proxy 限制配普通 full node 即可；`call_function` / `call_function_series` / `get_storage_at` 走历史 state 必须配 **archive 节点**（Alchemy / Quicknode / drpc / Ankr / 自建 erigon）。常用 chain：`RPC_URL_1` (mainnet)、`RPC_URL_42161` (arbitrum)、`RPC_URL_8453` (base)、`RPC_URL_56` (bsc)、`RPC_URL_4663` (Robinhood)、`RPC_URL_46630` (Robinhood testnet)。对 Robinhood 显式设空值可禁用内置 RPC。 |
 | `RPC_<chainid>` | — | `RPC_URL_<chainid>` 的兼容别名 |
 | `RPC_URL` | — | 默认链的 JSON-RPC 端点（仅未显式传 `network` 时生效；显式传 `network` 推荐用 `RPC_URL_<chainid>` 避免误绑定） |
+| `ALCHEMY_API_KEY` | — | 为 Robinhood 主网 / 测试网生成官方 Alchemy RPC，优先于内置公共 RPC、低于显式 `RPC_URL_4663` / `RPC_URL_46630`。不会写入输出；HTTP 异常只显示脱敏 host。 |
 | `EXPLORER_API_URL_<chainid>` | Robinhood 两条链有内置 Blockscout，其余 — | 覆盖指定链的 Etherscan-compatible explorer API；例如 `EXPLORER_API_URL_4663`。URL 必须包含 API path（Blockscout 通常为 `/api`），末尾 `/` 会规范化；显式设空值可禁用内置 indexer。`ETHERSCAN_API_KEY` 不会发往该端点。 |
 | `REQUEST_TIMEOUT` | `10` | 单次请求超时（秒） |
 | `REQUEST_RETRIES` | `3` | 重试次数 |

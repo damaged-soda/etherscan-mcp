@@ -22,6 +22,7 @@ environment:
   CHAIN_ID                 explicit chainid override (beats NETWORK).
   RPC_URL                  default JSON-RPC endpoint for eth_call / storage / logs.
   RPC_URL_<chainid>        per-chain JSON-RPC endpoint, e.g. RPC_URL_1, RPC_URL_56.
+  ALCHEMY_API_KEY          prefer official Alchemy RPC for built-in Robinhood presets.
   EXPLORER_API_URL_<id>    per-chain Etherscan-compatible explorer API override.
   ETHERSCAN_MCP_CACHE_DIR  token/contract metadata cache dir (default ~/.cache/etherscan-mcp).
 

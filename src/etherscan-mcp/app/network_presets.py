@@ -15,6 +15,7 @@ NETWORK_PRESETS: Dict[str, Dict[str, Any]] = {
         "blockexplorer": "https://robinhoodchain.blockscout.com",
         "apiurl": "https://robinhoodchain.blockscout.com/api",
         "rpc_url": "https://rpc.mainnet.chain.robinhood.com",
+        "alchemy_rpc_url": "https://robinhood-mainnet.g.alchemy.com/v2/{api_key}",
         "status": 1,
         "comment": "Built-in Blockscout/public-RPC preset; public endpoints are rate-limited.",
     },
@@ -24,6 +25,7 @@ NETWORK_PRESETS: Dict[str, Dict[str, Any]] = {
         "blockexplorer": "https://explorer.testnet.chain.robinhood.com",
         "apiurl": "https://explorer.testnet.chain.robinhood.com/api",
         "rpc_url": "https://rpc.testnet.chain.robinhood.com",
+        "alchemy_rpc_url": "https://robinhood-testnet.g.alchemy.com/v2/{api_key}",
         "status": 1,
         "comment": "Built-in Blockscout/public-RPC preset; testnet assets have no value.",
     },
@@ -40,6 +42,14 @@ def default_rpc_urls() -> Dict[str, str]:
 
 def default_rpc_url_sources() -> Dict[str, str]:
     return {chain_id: "builtin" for chain_id in default_rpc_urls()}
+
+
+def alchemy_rpc_urls(api_key: str) -> Dict[str, str]:
+    return {
+        chain_id: str(preset["alchemy_rpc_url"]).format(api_key=api_key)
+        for chain_id, preset in NETWORK_PRESETS.items()
+        if preset.get("alchemy_rpc_url")
+    }
 
 
 def default_explorer_api_urls() -> Dict[str, str]:

@@ -1929,7 +1929,7 @@ class ContractService:
         label, cid, meta = self.chains.resolve(str(network))
         rpc_available = bool(self.config.rpc_urls.get(str(cid)))
         rpc_source = self.config.rpc_url_sources.get(str(cid)) if rpc_available else None
-        rpc_configured = rpc_source in {"env", "programmatic"}
+        rpc_configured = rpc_source in {"alchemy", "env", "programmatic"}
         return {
             "input": network,
             "network": label,

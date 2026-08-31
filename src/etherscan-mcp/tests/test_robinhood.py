@@ -55,6 +55,59 @@ class RobinhoodConfigTest(unittest.TestCase):
             "https://explorer.testnet.chain.robinhood.com/api",
         )
 
+    def test_alchemy_key_replaces_builtin_robinhood_rpc(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ETHERSCAN_API_KEY": "test-key",
+                "ALCHEMY_API_KEY": "alchemy/key+=",
+            },
+            clear=True,
+        ):
+            config = load_config()
+
+        self.assertEqual(
+            config.rpc_urls["4663"],
+            "https://robinhood-mainnet.g.alchemy.com/v2/alchemy%2Fkey%2B%3D",
+        )
+        self.assertEqual(
+            config.rpc_urls["46630"],
+            "https://robinhood-testnet.g.alchemy.com/v2/alchemy%2Fkey%2B%3D",
+        )
+        self.assertEqual(config.rpc_url_sources["4663"], "alchemy")
+
+    def test_explicit_rpc_url_overrides_alchemy(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ETHERSCAN_API_KEY": "test-key",
+                "ALCHEMY_API_KEY": "alchemy-key",
+                "RPC_URL_4663": "https://explicit.example/rpc",
+            },
+            clear=True,
+        ):
+            config = load_config()
+
+        self.assertEqual(config.rpc_urls["4663"], "https://explicit.example/rpc")
+        self.assertEqual(config.rpc_url_sources["4663"], "env")
+        self.assertEqual(config.rpc_url_sources["46630"], "alchemy")
+
+    def test_explicit_empty_rpc_disables_alchemy_for_that_chain(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ETHERSCAN_API_KEY": "test-key",
+                "ALCHEMY_API_KEY": "alchemy-key",
+                "RPC_URL_4663": "",
+            },
+            clear=True,
+        ):
+            config = load_config()
+
+        self.assertNotIn("4663", config.rpc_urls)
+        self.assertNotIn("4663", config.rpc_url_sources)
+        self.assertEqual(config.rpc_url_sources["46630"], "alchemy")
+
     def test_environment_overrides_builtin_endpoints(self) -> None:
         with patch.dict(
             os.environ,
@@ -350,6 +403,23 @@ class RobinhoodExplorerRoutingTest(unittest.TestCase):
 
         self.assertTrue(result["rpc_configured"])
         self.assertEqual(result["rpc_source"], "programmatic")
+
+    def test_alchemy_rpc_counts_as_explicitly_configured(self) -> None:
+        service = ContractService(
+            Config(
+                api_key="test-key",
+                rpc_urls={
+                    "4663": "https://robinhood-mainnet.g.alchemy.com/v2/test-key"
+                },
+                rpc_url_sources={"4663": "alchemy"},
+            )
+        )
+
+        result = service.resolve_chain("robinhood")
+
+        self.assertTrue(result["rpc_available"])
+        self.assertTrue(result["rpc_configured"])
+        self.assertEqual(result["rpc_source"], "alchemy")
 
 
 class RpcCredentialRedactionTest(unittest.TestCase):
