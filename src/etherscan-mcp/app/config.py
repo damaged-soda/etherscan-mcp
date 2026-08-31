@@ -3,7 +3,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Optional
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from .network_presets import (
     BLOCKSCOUT_PRO_API_URL,
@@ -32,6 +32,10 @@ NETWORK_CHAIN_ID_MAP = {
 
 _RPC_URL_ENV_RE = re.compile(r"^(RPC_URL|RPC)_(\d+)$")
 _EXPLORER_API_URL_ENV_RE = re.compile(r"^EXPLORER_API_URL_(\d+)$")
+
+
+def _is_blockscout_pro_url(url: str) -> bool:
+    return (urlparse(url).hostname or "").lower() == "api.blockscout.com"
 
 
 @dataclass
@@ -71,12 +75,22 @@ class Config:
         builtin_explorer_urls = default_explorer_api_urls()
         for chain_id, url in self.explorer_api_urls.items():
             cid = str(chain_id)
-            if url == BLOCKSCOUT_PRO_API_URL and self.explorer_api_keys.get(cid):
+            source = self.explorer_api_sources.get(cid)
+            valid_blockscout_pro = bool(
+                _is_blockscout_pro_url(str(url)) and self.explorer_api_keys.get(cid)
+            )
+            if valid_blockscout_pro:
                 self.explorer_api_sources[cid] = "blockscout_pro"
+            elif source == "blockscout_pro":
+                self.explorer_api_sources[cid] = (
+                    "builtin"
+                    if str(url) == builtin_explorer_urls.get(cid)
+                    else "programmatic"
+                )
             elif (
-                self.explorer_api_sources.get(cid) is None
+                source is None
                 or (
-                    self.explorer_api_sources.get(cid) == "builtin"
+                    source == "builtin"
                     and str(url) != builtin_explorer_urls.get(cid)
                 )
             ):
@@ -156,7 +170,7 @@ def _load_explorer_api_config_from_env() -> tuple[Dict[str, str], Dict[str, str]
         url = (value or "").strip().rstrip("/")
         if url:
             api_urls[chain_id] = url
-            if url == BLOCKSCOUT_PRO_API_URL and chain_id in api_keys:
+            if _is_blockscout_pro_url(url) and chain_id in api_keys:
                 api_sources[chain_id] = "blockscout_pro"
             else:
                 api_sources[chain_id] = "env"

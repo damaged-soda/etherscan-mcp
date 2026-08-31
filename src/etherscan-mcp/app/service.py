@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import hashlib
 from decimal import Decimal, getcontext
+from urllib.parse import urlparse
 
 from .cache import ContractCache
 from .capabilities import build_route_hints, caveats_for, has_caveats
@@ -1931,9 +1932,13 @@ class ContractService:
         rpc_available = bool(self.config.rpc_urls.get(str(cid)))
         rpc_source = self.config.rpc_url_sources.get(str(cid)) if rpc_available else None
         rpc_configured = rpc_source in {"alchemy", "env", "programmatic"}
-        indexer_available = bool(self.config.explorer_api_urls.get(str(cid)))
+        configured_indexer_url = self.config.explorer_api_urls.get(str(cid))
+        effective_indexer_url = configured_indexer_url or self.config.base_url
+        indexer_available = bool(effective_indexer_url)
         indexer_source = (
-            self.config.explorer_api_sources.get(str(cid)) if indexer_available else None
+            self.config.explorer_api_sources.get(str(cid))
+            if configured_indexer_url
+            else ("etherscan" if indexer_available else None)
         )
         blockscout_pro_configured = indexer_source == "blockscout_pro"
         return {
@@ -1946,12 +1951,28 @@ class ContractService:
             "rpc_source": rpc_source,
             "indexer_available": indexer_available,
             "indexer_source": indexer_source,
+            "indexer_url": self._safe_indexer_url(effective_indexer_url, indexer_source),
             "caveats": caveats_for(
                 cid,
                 rpc_configured,
                 blockscout_pro_configured=blockscout_pro_configured,
             ),
         }
+
+    @staticmethod
+    def _safe_indexer_url(url: Optional[str], source: Optional[str]) -> Optional[str]:
+        if not url:
+            return None
+        parsed = urlparse(url)
+        hostname = parsed.hostname or ""
+        display_host = f"[{hostname}]" if ":" in hostname else hostname
+        if parsed.port is not None:
+            display_host = f"{display_host}:{parsed.port}"
+        if not display_host:
+            return None
+        if source in {"blockscout_pro", "builtin", "etherscan"}:
+            return f"{parsed.scheme}://{display_host}{parsed.path or ''}"
+        return f"{parsed.scheme}://{display_host}/***"
 
     def list_chains_with_caveats(self, include_degraded: bool = True) -> Dict[str, Any]:
         """

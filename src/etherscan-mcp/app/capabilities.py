@@ -262,7 +262,7 @@ def caveats_for(
     entries from GLOBAL_CAVEATS. `requires_rpc_url` flips to `ok` when
     rpc_configured=True; everything else stays as-is (paid_tier_only /
     degraded / unsupported are not RPC-fixable unless they declare a matching
-    `mitigated_by` provider.
+    `mitigated_by` provider).
 
     Note: `GLOBAL_CAVEATS` for `call_function` / `call_function_series` /
     `get_storage_at` flagging historical-block-tag support flips to `ok`

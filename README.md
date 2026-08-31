@@ -90,6 +90,8 @@ RPC_URL_4663=https://<provider-endpoint> python -m app call-function-series \
 
 若设置 `BLOCKSCOUT_API_KEY`，Robinhood 主网索引请求会改走统一 PRO API，参数自动从 Etherscan 的 `chainid` 转成 Blockscout 的 `chain_id=4663`，并返回 `indexer_source=blockscout_pro`；ABI / 源码 / 创建信息 / 地址交易 / token transfer caveat 会变成 `status_effective=ok`。测试网 `46630` 当前不在 PRO 支持清单中，继续使用可直连的测试网实例 API。没有 PRO key 时主网实例 API 可能被 Cloudflare 403。Robinhood Chain 与 Robinhood 券商 / crypto account API 相互独立，本仓不访问账户、不下单。
 
+`resolve-chain` 中 `indexer_available` 表示客户端存在可尝试的索引路由；`indexer_source` 区分 `etherscan` / `builtin` / `blockscout_pro` / `env` / `programmatic`，`indexer_url` 是实际路由的安全展示值。`meta.apiurl` 仅是 chain registry 原始元数据，不代表运行时 override。
+
 ## MCP（能力保留，本机注册已退役）
 
 > 2026-07-07 起本机不再注册本仓 MCP（TOOLING 决策：存量 MCP 逐仓退役，能力走 CLI + skill）。server 代码保留，其他环境如需注册可参考下例。

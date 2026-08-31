@@ -118,6 +118,37 @@ class RobinhoodConfigTest(unittest.TestCase):
         self.assertNotIn("4663", config.explorer_api_keys)
         self.assertEqual(config.explorer_api_sources["4663"], "env")
 
+    def test_blockscout_pro_url_with_query_keeps_scoped_key(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ETHERSCAN_API_KEY": "etherscan-key",
+                "BLOCKSCOUT_API_KEY": "blockscout-key",
+                "EXPLORER_API_URL_4663": "https://api.blockscout.com/v2/api?x=1",
+            },
+            clear=True,
+        ):
+            config = load_config()
+
+        self.assertEqual(config.explorer_api_keys["4663"], "blockscout-key")
+        self.assertEqual(config.explorer_api_sources["4663"], "blockscout_pro")
+
+    def test_empty_explorer_override_disables_blockscout_pro(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ETHERSCAN_API_KEY": "etherscan-key",
+                "BLOCKSCOUT_API_KEY": "blockscout-key",
+                "EXPLORER_API_URL_4663": "",
+            },
+            clear=True,
+        ):
+            config = load_config()
+
+        self.assertNotIn("4663", config.explorer_api_urls)
+        self.assertNotIn("4663", config.explorer_api_keys)
+        self.assertNotIn("4663", config.explorer_api_sources)
+
     def test_explicit_rpc_url_overrides_alchemy(self) -> None:
         with patch.dict(
             os.environ,
@@ -370,6 +401,37 @@ class RobinhoodExplorerRoutingTest(unittest.TestCase):
         self.assertNotIn("apikey", params)
         self.assertNotIn("BLOCKSCOUT-SECRET", params.values())
 
+    def test_blockscout_key_does_not_follow_switch_to_testnet(self) -> None:
+        client = EtherscanClient(
+            api_key="ETHERSCAN-SECRET",
+            base_url="https://api.etherscan.io/v2/api",
+            chain_id="4663",
+            chain_api_urls={
+                "4663": "https://api.blockscout.com/v2/api",
+                "46630": "https://explorer.testnet.chain.robinhood.com/api",
+            },
+            chain_api_keys={"4663": "BLOCKSCOUT-SECRET"},
+            max_retries=1,
+        )
+        response = Mock()
+        response.status_code = 200
+        response.json.return_value = {"status": "1", "message": "OK", "result": []}
+        response.raise_for_status.return_value = None
+        client.session.get = Mock(return_value=response)
+
+        client.get_contract_source("0x" + "1" * 40)
+        mainnet_params = client.session.get.call_args.kwargs["params"]
+        self.assertEqual(mainnet_params["apikey"], "BLOCKSCOUT-SECRET")
+
+        client.chain_id = "46630"
+        client.get_contract_source("0x" + "1" * 40)
+        testnet_url = client.session.get.call_args.args[0]
+        testnet_params = client.session.get.call_args.kwargs["params"]
+        self.assertEqual(
+            testnet_url, "https://explorer.testnet.chain.robinhood.com/api"
+        )
+        self.assertNotIn("apikey", testnet_params)
+
     def test_client_routes_robinhood_to_blockscout(self) -> None:
         client = EtherscanClient(
             api_key="test-key",
@@ -510,6 +572,7 @@ class RobinhoodExplorerRoutingTest(unittest.TestCase):
 
         self.assertTrue(result["indexer_available"])
         self.assertEqual(result["indexer_source"], "blockscout_pro")
+        self.assertEqual(result["indexer_url"], "https://api.blockscout.com/v2/api")
         self.assertTrue(
             all(
                 caveat["status_effective"] == "ok"
@@ -524,6 +587,58 @@ class RobinhoodExplorerRoutingTest(unittest.TestCase):
                 }
             )
         )
+
+    def test_custom_indexer_does_not_mitigate_blockscout_caveat(self) -> None:
+        service = ContractService(
+            Config(
+                api_key="etherscan-key",
+                explorer_api_urls={"4663": "https://custom.example/api"},
+                explorer_api_sources={"4663": "env"},
+            )
+        )
+
+        result = service.resolve_chain("robinhood")
+
+        self.assertEqual(result["indexer_source"], "env")
+        self.assertEqual(result["indexer_url"], "https://custom.example/***")
+        self.assertTrue(
+            any(
+                caveat["tool"] == "fetch_contract"
+                and caveat["status_effective"] == "degraded"
+                for caveat in result["caveats"]
+            )
+        )
+
+    def test_invalid_programmatic_provenance_is_demoted(self) -> None:
+        service = ContractService(
+            Config(
+                api_key="etherscan-key",
+                explorer_api_urls={
+                    "4663": "https://robinhoodchain.blockscout.com/api"
+                },
+                explorer_api_sources={"4663": "blockscout_pro"},
+            )
+        )
+
+        result = service.resolve_chain("robinhood")
+
+        self.assertEqual(result["indexer_source"], "builtin")
+        self.assertTrue(
+            any(
+                caveat["tool"] == "fetch_contract"
+                and caveat["status_effective"] == "degraded"
+                for caveat in result["caveats"]
+            )
+        )
+
+    def test_etherscan_chain_reports_available_indexer_route(self) -> None:
+        service = ContractService(Config(api_key="etherscan-key"))
+
+        result = service.resolve_chain("8453")
+
+        self.assertTrue(result["indexer_available"])
+        self.assertEqual(result["indexer_source"], "etherscan")
+        self.assertEqual(result["indexer_url"], "https://api.etherscan.io/v2/api")
 
     def test_contract_creation_identifies_blockscout_source(self) -> None:
         service = ContractService(Config(api_key="test-key"))
