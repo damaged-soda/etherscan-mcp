@@ -86,7 +86,7 @@ RPC_URL_4663=https://<provider-endpoint> python -m app call-function-series \
   --from-block 100000 --to-block 110000 --stride 100
 ```
 
-内置公共 RPC 有速率限制，且不承诺 archive 能力；`resolve-chain` 会返回 `rpc_available=true`、`rpc_source=builtin`、`rpc_configured=false`，历史 state caveat 不会被误标成 `ok`。`call_function_series` 或指定历史 `block_tag` 时仍应设置 `RPC_URL_4663` / `RPC_URL_46630` 为 archive endpoint。主网 Blockscout 偶尔会对非浏览器客户端返回 Cloudflare challenge；可重试或用 `EXPLORER_API_URL_4663` 覆盖为可直连的兼容索引端点。Robinhood Chain 与 Robinhood 券商 / crypto account API 相互独立，本仓不访问账户、不下单。
+内置公共 RPC 有速率限制，且不承诺 archive 能力；`resolve-chain` 会返回 `rpc_available=true`、`rpc_source=builtin`、`rpc_configured=false`，历史 state caveat 不会被误标成 `ok`。环境变量覆盖时 `rpc_source=env`；直接构造 `Config` 注入 URL 时为 `programmatic`，两者都算显式配置。`call_function_series` 或指定历史 `block_tag` 时仍应设置 `RPC_URL_4663` / `RPC_URL_46630` 为 archive endpoint。主网 Blockscout 偶尔会对非浏览器客户端返回 Cloudflare challenge；可重试或用 `EXPLORER_API_URL_4663` 覆盖为可直连的兼容索引端点。Robinhood Chain 与 Robinhood 券商 / crypto account API 相互独立，本仓不访问账户、不下单。
 
 ## MCP（能力保留，本机注册已退役）
 
@@ -157,7 +157,7 @@ python -m app.mcp_server --transport streamable-http --host 127.0.0.1 --port 870
 - **`get_transaction_summary` `flow_scope`**（compact 模式专用）：控制 `net_token_flow_by_address` 过滤粒度。`user`（默认）只保留 `tx.from` 净流，套利判断时一眼看用户最终拿了什么 / 丢了什么；`user_router` 额外保留 `tx.to`（router 自己截留 fee 的场景）；`all` 保留全部行（pool / zero address mint+burn / aggregator 中间地址都在）。`tokens` / `contracts` / `protocols` / `route_hints` 不受影响 —— 它们描述 tx 结构，不是用户净额。`counts.flow_rows_total` / `counts.flow_rows_after_scope` 暴露过滤前后行数。
 - **`query_logs`（RPC 路径）**：`page/offset` 用"按 block range 分段累积后切片"的 best-effort 实现；RPC log 不含 `timeStamp`，`time_stamp` 字段为 `null`。
 
-错误处理：JSON-RPC error 对象统一抛 `ValueError("RPC error: ...")`；Etherscan proxy 回退路径若返回非 hex `result`（往往是限流文案）会按错误处理而非成功；HTTP 429 / 5xx 走重试与退避。
+错误处理：JSON-RPC error 对象统一抛 `ValueError("RPC error: ...")`；Etherscan proxy 回退路径若返回非 hex `result`（往往是限流文案）会按错误处理而非成功；HTTP 429 / 5xx 走重试与退避。Explorer / provider RPC 的 HTTP 异常只保留 `scheme://host/***`，不会回显 path / query 中的 API key。
 
 ## 已知限制
 

@@ -1,5 +1,6 @@
 import time
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import requests
 
@@ -28,6 +29,22 @@ class RpcClient:
         if headers:
             self.session.headers.update(dict(headers))
         self._next_id = 1
+
+    def _safe_request_error(self, exc: requests.RequestException) -> ValueError:
+        parsed = urlparse(self.rpc_url)
+        hostname = parsed.hostname or ""
+        display_host = f"[{hostname}]" if ":" in hostname else hostname
+        if parsed.port is not None:
+            display_host = f"{display_host}:{parsed.port}"
+        safe_target = (
+            f"{parsed.scheme}://{display_host}/***" if display_host else "RPC endpoint"
+        )
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+        reason = getattr(response, "reason", None)
+        detail = " ".join(str(value) for value in (status, reason) if value)
+        suffix = f" ({detail})" if detail else ""
+        return ValueError(f"RPC request failed for {safe_target}{suffix}.")
 
     def call(self, method: str, params: Optional[List[Any]] = None) -> Any:
         if not isinstance(method, str) or not method.strip():
@@ -86,7 +103,7 @@ class RpcClient:
                 if attempt < self.max_retries:
                     time.sleep(self.backoff_seconds * attempt)
                     continue
-                raise
+                raise self._safe_request_error(exc) from None
             except ValueError as exc:
                 last_error = exc
                 if attempt < self.max_retries:
@@ -178,7 +195,7 @@ class RpcClient:
                 if attempt < self.max_retries:
                     time.sleep(self.backoff_seconds * attempt)
                     continue
-                raise
+                raise self._safe_request_error(exc) from None
             except ValueError as exc:
                 last_error = exc
                 if attempt < self.max_retries:

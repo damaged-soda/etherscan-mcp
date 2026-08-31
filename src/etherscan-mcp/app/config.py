@@ -51,6 +51,16 @@ class Config:
     cache_dir: Optional[Path] = None
     metadata_fetch_concurrency: int = 5
 
+    def __post_init__(self) -> None:
+        """Infer provenance for callers that construct Config directly."""
+        builtin_urls = default_rpc_urls()
+        for chain_id, url in self.rpc_urls.items():
+            source = self.rpc_url_sources.get(str(chain_id))
+            if source is None or (
+                source == "builtin" and str(url) != builtin_urls.get(str(chain_id))
+            ):
+                self.rpc_url_sources[str(chain_id)] = "programmatic"
+
 
 def resolve_chain_id(network: str, override_chain_id: Optional[str] = None) -> str:
     """Resolve chain ID from override or static network mapping."""
@@ -75,17 +85,23 @@ def _load_rpc_urls_from_env() -> tuple[Dict[str, str], Dict[str, str]]:
     """Load chainid -> RPC URL mapping plus builtin/env provenance."""
     rpc_urls = default_rpc_urls()
     rpc_url_sources = default_rpc_url_sources()
+    candidates: Dict[str, Dict[str, str]] = {}
     for key, value in os.environ.items():
         match = _RPC_URL_ENV_RE.match(key)
         if not match:
             continue
         chain_id = match.group(2)
-        url = (value or "").strip()
+        candidates.setdefault(chain_id, {})[match.group(1)] = (value or "").strip()
+
+    for chain_id, values in candidates.items():
+        # Prefer the canonical RPC_URL_<id>; use RPC_<id> only when the
+        # canonical value is empty/missing. Opt out only when every present
+        # spelling is explicitly empty, independent of os.environ order.
+        url = values.get("RPC_URL") or values.get("RPC")
         if url:
             rpc_urls[chain_id] = url
             rpc_url_sources[chain_id] = "env"
         else:
-            # An explicitly empty variable opts out of a built-in public RPC.
             rpc_urls.pop(chain_id, None)
             rpc_url_sources.pop(chain_id, None)
     return rpc_urls, rpc_url_sources

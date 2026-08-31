@@ -268,6 +268,15 @@ class EtherscanClient:
                     time.sleep(self.backoff_seconds * attempt)
                     continue
                 return payload
+            except requests.exceptions.JSONDecodeError as exc:
+                last_error = exc
+                if attempt < self.max_retries:
+                    time.sleep(self.backoff_seconds * attempt)
+                else:
+                    label = self.indexer_name() if url == self.api_url() else "etherscan"
+                    raise ValueError(
+                        f"Failed to parse response from {label.capitalize()}."
+                    ) from None
             except requests.RequestException as exc:
                 last_error = exc
                 if attempt < self.max_retries:

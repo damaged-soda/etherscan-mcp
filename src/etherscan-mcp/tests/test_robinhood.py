@@ -7,6 +7,7 @@ import requests
 from app.chains import ChainRegistry
 from app.config import Config, load_config, resolve_chain_id
 from app.etherscan_client import EtherscanClient
+from app.rpc_client import RpcClient
 from app.service import ContractService
 
 
@@ -88,6 +89,47 @@ class RobinhoodConfigTest(unittest.TestCase):
         self.assertNotIn("4663", config.rpc_urls)
         self.assertNotIn("4663", config.rpc_url_sources)
         self.assertNotIn("4663", config.explorer_api_urls)
+
+    def test_nonempty_rpc_spelling_wins_over_empty_alias_regardless_of_order(self) -> None:
+        env_variants = (
+            dict(
+                [
+                    ("ETHERSCAN_API_KEY", "test-key"),
+                    ("RPC_URL_4663", "https://canonical.example/rpc"),
+                    ("RPC_4663", ""),
+                ]
+            ),
+            dict(
+                [
+                    ("ETHERSCAN_API_KEY", "test-key"),
+                    ("RPC_4663", ""),
+                    ("RPC_URL_4663", "https://canonical.example/rpc"),
+                ]
+            ),
+        )
+        for env in env_variants:
+            with self.subTest(order=list(env)):
+                with patch.dict(os.environ, env, clear=True):
+                    config = load_config()
+                self.assertEqual(
+                    config.rpc_urls["4663"], "https://canonical.example/rpc"
+                )
+                self.assertEqual(config.rpc_url_sources["4663"], "env")
+
+    def test_nonempty_rpc_alias_is_used_when_canonical_spelling_is_empty(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ETHERSCAN_API_KEY": "test-key",
+                "RPC_URL_4663": "",
+                "RPC_4663": "https://alias.example/rpc",
+            },
+            clear=True,
+        ):
+            config = load_config()
+
+        self.assertEqual(config.rpc_urls["4663"], "https://alias.example/rpc")
+        self.assertEqual(config.rpc_url_sources["4663"], "env")
 
 
 class RobinhoodRegistryTest(unittest.TestCase):
@@ -215,16 +257,16 @@ class RobinhoodExplorerRoutingTest(unittest.TestCase):
             },
             max_retries=1,
         )
-        response = Mock()
+        response = requests.Response()
         response.status_code = 200
-        response.raise_for_status.return_value = None
-        response.json.side_effect = ValueError("not JSON")
+        response._content = b"<html><title>Just a moment...</title></html>"
+        response.encoding = "utf-8"
         client.session.get = Mock(return_value=response)
 
         with self.assertRaisesRegex(ValueError, "Failed to parse response from Blockscout"):
             client.get_contract_source("0x" + "1" * 40)
 
-    def test_service_reports_builtin_rpc_as_configured(self) -> None:
+    def test_service_reports_builtin_rpc_provenance(self) -> None:
         service = ContractService(Config(api_key="test-key"))
 
         result = service.resolve_chain("robinhood")
@@ -294,6 +336,41 @@ class RobinhoodExplorerRoutingTest(unittest.TestCase):
                 for caveat in result["caveats"]
                 if caveat["tool"] in {"call_function", "call_function_series", "get_storage_at"}
             )
+        )
+
+    def test_programmatic_rpc_override_infers_provenance(self) -> None:
+        service = ContractService(
+            Config(
+                api_key="test-key",
+                rpc_urls={"4663": "https://programmatic.example/rpc"},
+            )
+        )
+
+        result = service.resolve_chain("robinhood")
+
+        self.assertTrue(result["rpc_configured"])
+        self.assertEqual(result["rpc_source"], "programmatic")
+
+
+class RpcCredentialRedactionTest(unittest.TestCase):
+    def test_rpc_http_error_does_not_echo_provider_key(self) -> None:
+        rpc_url = "https://rpc.provider.example/v2/SUPER-SECRET-PROVIDER-KEY"
+        client = RpcClient(rpc_url, max_retries=1)
+        response = requests.Response()
+        response.status_code = 401
+        response.reason = "Unauthorized"
+        response.url = rpc_url
+        response.request = requests.Request("POST", rpc_url).prepare()
+        client.session.post = Mock(return_value=response)
+
+        with self.assertRaises(ValueError) as caught:
+            client.call("eth_blockNumber", [])
+
+        message = str(caught.exception)
+        self.assertNotIn("SUPER-SECRET-PROVIDER-KEY", message)
+        self.assertEqual(
+            message,
+            "RPC request failed for https://rpc.provider.example/*** (401 Unauthorized).",
         )
 
 
