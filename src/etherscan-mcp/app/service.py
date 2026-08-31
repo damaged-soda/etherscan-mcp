@@ -74,6 +74,7 @@ class ContractService:
             max_retries=config.max_retries,
             backoff_seconds=config.backoff_seconds,
             chain_api_urls=config.explorer_api_urls,
+            chain_api_keys=config.explorer_api_keys,
         )
         self.chains = ChainRegistry(
             client=self.client,
@@ -1930,6 +1931,11 @@ class ContractService:
         rpc_available = bool(self.config.rpc_urls.get(str(cid)))
         rpc_source = self.config.rpc_url_sources.get(str(cid)) if rpc_available else None
         rpc_configured = rpc_source in {"alchemy", "env", "programmatic"}
+        indexer_available = bool(self.config.explorer_api_urls.get(str(cid)))
+        indexer_source = (
+            self.config.explorer_api_sources.get(str(cid)) if indexer_available else None
+        )
+        blockscout_pro_configured = indexer_source == "blockscout_pro"
         return {
             "input": network,
             "network": label,
@@ -1938,7 +1944,13 @@ class ContractService:
             "rpc_configured": rpc_configured,
             "rpc_available": rpc_available,
             "rpc_source": rpc_source,
-            "caveats": caveats_for(cid, rpc_configured),
+            "indexer_available": indexer_available,
+            "indexer_source": indexer_source,
+            "caveats": caveats_for(
+                cid,
+                rpc_configured,
+                blockscout_pro_configured=blockscout_pro_configured,
+            ),
         }
 
     def list_chains_with_caveats(self, include_degraded: bool = True) -> Dict[str, Any]:

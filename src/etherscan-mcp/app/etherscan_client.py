@@ -17,6 +17,7 @@ class EtherscanClient:
         max_retries: int = 3,
         backoff_seconds: float = 0.5,
         chain_api_urls: Optional[Dict[str, str]] = None,
+        chain_api_keys: Optional[Dict[str, str]] = None,
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
@@ -28,6 +29,11 @@ class EtherscanClient:
             str(chain_id): str(url).rstrip("/")
             for chain_id, url in (chain_api_urls or {}).items()
             if str(url).strip()
+        }
+        self.chain_api_keys = {
+            str(chain_id): str(key)
+            for chain_id, key in (chain_api_keys or {}).items()
+            if str(key).strip()
         }
         self.session = requests.Session()
 
@@ -198,6 +204,10 @@ class EtherscanClient:
         return self._origin(url) == self._origin(self.base_url)
 
     @staticmethod
+    def _is_blockscout_pro(url: str) -> bool:
+        return (urlparse(url).hostname or "").lower() == "api.blockscout.com"
+
+    @staticmethod
     def _safe_request_error(url: str, exc: requests.RequestException) -> ValueError:
         parsed = urlparse(url)
         hostname = parsed.hostname or ""
@@ -242,10 +252,17 @@ class EtherscanClient:
             or "too many requests" in haystack
         )
 
-    def _request_url(self, url: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    def _request_url(
+        self,
+        url: str,
+        params: Dict[str, Any],
+        chain_api_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
         merged = dict(params or {})
         headers: Dict[str, str] = {}
-        if self.api_key and self._uses_etherscan_credentials(url):
+        if chain_api_key and self._is_blockscout_pro(url):
+            merged["apikey"] = chain_api_key
+        elif self.api_key and self._uses_etherscan_credentials(url):
             merged["apikey"] = self.api_key
             headers["X-API-Key"] = self.api_key
         last_error: Optional[Exception] = None
@@ -299,4 +316,13 @@ class EtherscanClient:
         raise RuntimeError("Request failed without raising an exception.")
 
     def _request(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        return self._request_url(self.api_url(), params)
+        url = self.api_url()
+        merged = dict(params)
+        if self._is_blockscout_pro(url):
+            chain_id = str(merged.pop("chainid", self.chain_id))
+            merged["chain_id"] = chain_id
+        return self._request_url(
+            url,
+            merged,
+            chain_api_key=self.chain_api_keys.get(str(self.chain_id)),
+        )

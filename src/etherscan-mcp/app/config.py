@@ -6,7 +6,10 @@ from typing import Dict, Optional
 from urllib.parse import quote
 
 from .network_presets import (
+    BLOCKSCOUT_PRO_API_URL,
     alchemy_rpc_urls,
+    blockscout_pro_chain_ids,
+    default_explorer_api_sources,
     default_explorer_api_urls,
     default_rpc_url_sources,
     default_rpc_urls,
@@ -47,6 +50,8 @@ class Config:
     rpc_url_sources: Dict[str, str] = field(default_factory=default_rpc_url_sources)
     rpc_url_default: Optional[str] = None
     explorer_api_urls: Dict[str, str] = field(default_factory=default_explorer_api_urls)
+    explorer_api_keys: Dict[str, str] = field(default_factory=dict)
+    explorer_api_sources: Dict[str, str] = field(default_factory=default_explorer_api_sources)
     # Disk cache directory for stable per-(chain, address) lookups (token
     # symbol/decimals/name, contract names). Empty string disables persistence
     # entirely. Absent / None falls back to ~/.cache/etherscan-mcp.
@@ -62,6 +67,20 @@ class Config:
                 source == "builtin" and str(url) != builtin_urls.get(str(chain_id))
             ):
                 self.rpc_url_sources[str(chain_id)] = "programmatic"
+
+        builtin_explorer_urls = default_explorer_api_urls()
+        for chain_id, url in self.explorer_api_urls.items():
+            cid = str(chain_id)
+            if url == BLOCKSCOUT_PRO_API_URL and self.explorer_api_keys.get(cid):
+                self.explorer_api_sources[cid] = "blockscout_pro"
+            elif (
+                self.explorer_api_sources.get(cid) is None
+                or (
+                    self.explorer_api_sources.get(cid) == "builtin"
+                    and str(url) != builtin_explorer_urls.get(cid)
+                )
+            ):
+                self.explorer_api_sources[cid] = "programmatic"
 
 
 def resolve_chain_id(network: str, override_chain_id: Optional[str] = None) -> str:
@@ -116,9 +135,19 @@ def _load_rpc_urls_from_env() -> tuple[Dict[str, str], Dict[str, str]]:
     return rpc_urls, rpc_url_sources
 
 
-def _load_explorer_api_urls_from_env() -> Dict[str, str]:
-    """Load chainid -> Etherscan-compatible explorer API URL mapping."""
+def _load_explorer_api_config_from_env() -> tuple[Dict[str, str], Dict[str, str], Dict[str, str]]:
+    """Load explorer URLs, scoped credentials, and endpoint provenance."""
     api_urls = default_explorer_api_urls()
+    api_keys: Dict[str, str] = {}
+    api_sources = default_explorer_api_sources()
+
+    blockscout_api_key = (os.getenv("BLOCKSCOUT_API_KEY") or "").strip()
+    if blockscout_api_key:
+        for chain_id in blockscout_pro_chain_ids():
+            api_urls[chain_id] = BLOCKSCOUT_PRO_API_URL
+            api_keys[chain_id] = blockscout_api_key
+            api_sources[chain_id] = "blockscout_pro"
+
     for key, value in os.environ.items():
         match = _EXPLORER_API_URL_ENV_RE.match(key)
         if not match:
@@ -127,10 +156,17 @@ def _load_explorer_api_urls_from_env() -> Dict[str, str]:
         url = (value or "").strip().rstrip("/")
         if url:
             api_urls[chain_id] = url
+            if url == BLOCKSCOUT_PRO_API_URL and chain_id in api_keys:
+                api_sources[chain_id] = "blockscout_pro"
+            else:
+                api_sources[chain_id] = "env"
+                api_keys.pop(chain_id, None)
         else:
             # An explicitly empty variable opts out of a built-in indexer.
             api_urls.pop(chain_id, None)
-    return api_urls
+            api_keys.pop(chain_id, None)
+            api_sources.pop(chain_id, None)
+    return api_urls, api_keys, api_sources
 
 
 def load_config() -> Config:
@@ -150,7 +186,9 @@ def load_config() -> Config:
     rpc_urls, rpc_url_sources = _load_rpc_urls_from_env()
     rpc_url_default = os.getenv("RPC_URL")
     rpc_url_default = rpc_url_default.strip() if rpc_url_default else None
-    explorer_api_urls = _load_explorer_api_urls_from_env()
+    explorer_api_urls, explorer_api_keys, explorer_api_sources = (
+        _load_explorer_api_config_from_env()
+    )
 
     cache_dir_env = os.getenv("ETHERSCAN_MCP_CACHE_DIR")
     if cache_dir_env is None:
@@ -189,6 +227,8 @@ def load_config() -> Config:
         rpc_url_sources=rpc_url_sources,
         rpc_url_default=rpc_url_default,
         explorer_api_urls=explorer_api_urls,
+        explorer_api_keys=explorer_api_keys,
+        explorer_api_sources=explorer_api_sources,
         cache_dir=cache_dir,
         metadata_fetch_concurrency=metadata_concurrency,
     )

@@ -63,7 +63,7 @@ etherscan get-transaction-summary --tx-hash 0x... --compact
 etherscan resolve-chain --network base
 etherscan fetch --address 0x... --network 8453
 
-# Robinhood Chain:有 Alchemy key 时优先 Alchemy,否则公共 RPC;索引走 Blockscout
+# Robinhood:RPC 优先 Alchemy;主网索引优先 Blockscout PRO
 etherscan resolve-chain --network robinhood
 etherscan get-block --network robinhood --block latest --tx-hashes-only
 etherscan fetch --network robinhood-testnet --address 0x...
@@ -77,7 +77,8 @@ etherscan fetch --network robinhood-testnet --address 0x...
 - Robinhood 可用 `robinhood` / `robinhood-testnet` 别名。`ALCHEMY_API_KEY`
   会生成主网 / 测试网 Alchemy endpoint;显式 `RPC_URL_4663` /
   `RPC_URL_46630` 优先级更高。未配 Alchemy 才回退限速公共 RPC。历史 state
-  仍要确认 Alchemy plan / endpoint 有 archive 能力。主网 Blockscout 若返回
-  Cloudflare challenge,按 caveat 重试或覆盖 `EXPLORER_API_URL_4663`。
-- `call-function-series` 需要该链 `RPC_URL_<chainid>` 指向 archive 节点。
+  仍要确认 Alchemy plan / endpoint 有 archive 能力。`BLOCKSCOUT_API_KEY` 让
+  主网索引改走统一 PRO API,绕开实例域名的 Cloudflare;PRO 暂不支持测试网
+  46630,测试网继续走现有实例 API。用 `resolve-chain` 看 `indexer_source`。
+- `call-function-series` 需要 archive-capable RPC;Robinhood 可用 Alchemy 路径。
 - 内核与参数语义详见 `~/work/personal/etherscan-mcp/README.md`。
