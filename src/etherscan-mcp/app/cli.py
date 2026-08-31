@@ -22,6 +22,9 @@ environment:
   CHAIN_ID                 explicit chainid override (beats NETWORK).
   RPC_URL                  default JSON-RPC endpoint for eth_call / storage / logs.
   RPC_URL_<chainid>        per-chain JSON-RPC endpoint, e.g. RPC_URL_1, RPC_URL_56.
+  ALCHEMY_API_KEY          prefer official Alchemy RPC for built-in Robinhood presets.
+  BLOCKSCOUT_API_KEY       use Blockscout PRO indexer for Robinhood mainnet.
+  EXPLORER_API_URL_<id>    per-chain Etherscan-compatible explorer API override.
   ETHERSCAN_MCP_CACHE_DIR  token/contract metadata cache dir (default ~/.cache/etherscan-mcp).
 
 Full variable list and parameter semantics: README.md in the repo root.
@@ -71,7 +74,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="etherscan",
         description=(
-            "Etherscan API V2 + EVM JSON-RPC read-only CLI: verified contract ABI/source, "
+            "Etherscan/Blockscout + EVM JSON-RPC read-only CLI: verified contract ABI/source, "
             "transactions, token transfers, logs, storage, eth_call, and chain utilities. "
             "Never signs or broadcasts transactions."
         ),
@@ -84,7 +87,7 @@ def _build_parser() -> argparse.ArgumentParser:
     fetch_parser = subparsers.add_parser(
         "fetch",
         help="Fetch verified contract ABI and source code",
-        description="Fetch verified contract ABI and source code from Etherscan. Use --inline-limit/--force-inline to control inlined source size.",
+        description="Fetch verified contract ABI and source code from the chain's configured explorer indexer. Use --inline-limit/--force-inline to control inlined source size.",
     )
     fetch_parser.add_argument("--address", required=True, help="Contract address (0x-prefixed).")
     _add_network(fetch_parser)
@@ -107,7 +110,7 @@ def _build_parser() -> argparse.ArgumentParser:
     get_file_parser = subparsers.add_parser(
         "get-source-file",
         help="Fetch a single source file of a verified contract",
-        description="Fetch one source file by exact filename as reported by Etherscan. Supports --offset/--length for chunked reads of large files.",
+        description="Fetch one source file by exact filename as reported by the explorer indexer. Supports --offset/--length for chunked reads of large files.",
     )
     get_file_parser.add_argument("--address", required=True, help="Contract address (0x-prefixed).")
     get_file_parser.add_argument("--filename", required=True, help="Exact filename as reported by Etherscan.")
@@ -255,7 +258,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Call the same read-only function across a historical block range",
         description=(
             "Call the same read-only function across a historical block range via JSON-RPC batch eth_call.\n"
-            "Requires RPC_URL_<chainid> backed by an archive node.\n"
+            "Requires an archive-capable RPC (RPC_URL_<chainid>, or Robinhood ALCHEMY_API_KEY).\n"
             "Example:\n"
             "  call-function-series --address 0xdAC1... --function 'totalSupply()' \\\n"
             "      --from-block 20000000 --to-block 20001000 --stride 100 --decimals 6"
@@ -413,8 +416,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     chains_parser = subparsers.add_parser(
         "list-chains",
-        help="List supported chains from Etherscan chainlist",
-        description="List chains supported by Etherscan V2 via /v2/chainlist. Rows carry has_caveats flagging known plan/RPC limits.",
+        help="List supported chains from chainlist and local presets",
+        description="List Etherscan V2 chains plus built-in explorer presets. Rows carry has_caveats flagging known plan/RPC limits.",
     )
     chains_parser.add_argument("--include-degraded", action="store_true", help="Include offline/degraded chains.")
     chains_parser.set_defaults(
@@ -423,8 +426,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     resolve_parser = subparsers.add_parser(
         "resolve-chain",
-        help="Resolve a network string to chainid via chainlist",
-        description="Resolve a network name/alias to chainid via chainlist. Returns rpc_configured plus per-tool caveats.",
+        help="Resolve a network string to chainid",
+        description="Resolve a network name/alias to chainid via local presets and chainlist. Returns RPC/indexer provenance plus per-tool caveats.",
     )
     resolve_parser.add_argument("--network", required=True, help="Network name/alias or numeric chainid.")
     resolve_parser.set_defaults(run=lambda svc, a: svc.resolve_chain(a.network))

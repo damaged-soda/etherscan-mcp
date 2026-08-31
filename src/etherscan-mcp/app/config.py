@@ -3,6 +3,18 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Optional
+from urllib.parse import quote, urlparse
+
+from .network_presets import (
+    BLOCKSCOUT_PRO_API_URL,
+    alchemy_rpc_urls,
+    blockscout_pro_chain_ids,
+    default_explorer_api_sources,
+    default_explorer_api_urls,
+    default_rpc_url_sources,
+    default_rpc_urls,
+    preset_aliases,
+)
 
 DEFAULT_BASE_URL = "https://api.etherscan.io/v2/api"
 DEFAULT_CHAINLIST_URL = "https://api.etherscan.io/v2/chainlist"
@@ -15,9 +27,15 @@ NETWORK_CHAIN_ID_MAP = {
     "bsc": "56",
     "sepolia": "11155111",
     "holesky": "17000",
+    **preset_aliases(),
 }
 
 _RPC_URL_ENV_RE = re.compile(r"^(RPC_URL|RPC)_(\d+)$")
+_EXPLORER_API_URL_ENV_RE = re.compile(r"^EXPLORER_API_URL_(\d+)$")
+
+
+def _is_blockscout_pro_url(url: str) -> bool:
+    return (urlparse(url).hostname or "").lower() == "api.blockscout.com"
 
 
 @dataclass
@@ -32,13 +50,51 @@ class Config:
     max_retries: int = 3
     backoff_seconds: float = 0.5
     chainlist_ttl_seconds: int = 3600
-    rpc_urls: Dict[str, str] = field(default_factory=dict)
+    rpc_urls: Dict[str, str] = field(default_factory=default_rpc_urls)
+    rpc_url_sources: Dict[str, str] = field(default_factory=default_rpc_url_sources)
     rpc_url_default: Optional[str] = None
+    explorer_api_urls: Dict[str, str] = field(default_factory=default_explorer_api_urls)
+    explorer_api_keys: Dict[str, str] = field(default_factory=dict)
+    explorer_api_sources: Dict[str, str] = field(default_factory=default_explorer_api_sources)
     # Disk cache directory for stable per-(chain, address) lookups (token
     # symbol/decimals/name, contract names). Empty string disables persistence
     # entirely. Absent / None falls back to ~/.cache/etherscan-mcp.
     cache_dir: Optional[Path] = None
     metadata_fetch_concurrency: int = 5
+
+    def __post_init__(self) -> None:
+        """Infer provenance for callers that construct Config directly."""
+        builtin_urls = default_rpc_urls()
+        for chain_id, url in self.rpc_urls.items():
+            source = self.rpc_url_sources.get(str(chain_id))
+            if source is None or (
+                source == "builtin" and str(url) != builtin_urls.get(str(chain_id))
+            ):
+                self.rpc_url_sources[str(chain_id)] = "programmatic"
+
+        builtin_explorer_urls = default_explorer_api_urls()
+        for chain_id, url in self.explorer_api_urls.items():
+            cid = str(chain_id)
+            source = self.explorer_api_sources.get(cid)
+            valid_blockscout_pro = bool(
+                _is_blockscout_pro_url(str(url)) and self.explorer_api_keys.get(cid)
+            )
+            if valid_blockscout_pro:
+                self.explorer_api_sources[cid] = "blockscout_pro"
+            elif source == "blockscout_pro":
+                self.explorer_api_sources[cid] = (
+                    "builtin"
+                    if str(url) == builtin_explorer_urls.get(cid)
+                    else "programmatic"
+                )
+            elif (
+                source is None
+                or (
+                    source == "builtin"
+                    and str(url) != builtin_explorer_urls.get(cid)
+                )
+            ):
+                self.explorer_api_sources[cid] = "programmatic"
 
 
 def resolve_chain_id(network: str, override_chain_id: Optional[str] = None) -> str:
@@ -60,18 +116,71 @@ def resolve_chain_id(network: str, override_chain_id: Optional[str] = None) -> s
     )
 
 
-def _load_rpc_urls_from_env() -> Dict[str, str]:
-    """Load chainid -> RPC URL mapping from environment variables."""
-    rpc_urls: Dict[str, str] = {}
+def _load_rpc_urls_from_env() -> tuple[Dict[str, str], Dict[str, str]]:
+    """Load chainid -> RPC URL mapping plus builtin/env provenance."""
+    rpc_urls = default_rpc_urls()
+    rpc_url_sources = default_rpc_url_sources()
+    alchemy_api_key = (os.getenv("ALCHEMY_API_KEY") or "").strip()
+    if alchemy_api_key:
+        encoded_key = quote(alchemy_api_key, safe="")
+        for chain_id, url in alchemy_rpc_urls(encoded_key).items():
+            rpc_urls[chain_id] = url
+            rpc_url_sources[chain_id] = "alchemy"
+
+    candidates: Dict[str, Dict[str, str]] = {}
     for key, value in os.environ.items():
         match = _RPC_URL_ENV_RE.match(key)
         if not match:
             continue
         chain_id = match.group(2)
-        url = (value or "").strip()
+        candidates.setdefault(chain_id, {})[match.group(1)] = (value or "").strip()
+
+    for chain_id, values in candidates.items():
+        # Prefer the canonical RPC_URL_<id>; use RPC_<id> only when the
+        # canonical value is empty/missing. Opt out only when every present
+        # spelling is explicitly empty, independent of os.environ order.
+        url = values.get("RPC_URL") or values.get("RPC")
         if url:
             rpc_urls[chain_id] = url
-    return rpc_urls
+            rpc_url_sources[chain_id] = "env"
+        else:
+            rpc_urls.pop(chain_id, None)
+            rpc_url_sources.pop(chain_id, None)
+    return rpc_urls, rpc_url_sources
+
+
+def _load_explorer_api_config_from_env() -> tuple[Dict[str, str], Dict[str, str], Dict[str, str]]:
+    """Load explorer URLs, scoped credentials, and endpoint provenance."""
+    api_urls = default_explorer_api_urls()
+    api_keys: Dict[str, str] = {}
+    api_sources = default_explorer_api_sources()
+
+    blockscout_api_key = (os.getenv("BLOCKSCOUT_API_KEY") or "").strip()
+    if blockscout_api_key:
+        for chain_id in blockscout_pro_chain_ids():
+            api_urls[chain_id] = BLOCKSCOUT_PRO_API_URL
+            api_keys[chain_id] = blockscout_api_key
+            api_sources[chain_id] = "blockscout_pro"
+
+    for key, value in os.environ.items():
+        match = _EXPLORER_API_URL_ENV_RE.match(key)
+        if not match:
+            continue
+        chain_id = match.group(1)
+        url = (value or "").strip().rstrip("/")
+        if url:
+            api_urls[chain_id] = url
+            if _is_blockscout_pro_url(url) and chain_id in api_keys:
+                api_sources[chain_id] = "blockscout_pro"
+            else:
+                api_sources[chain_id] = "env"
+                api_keys.pop(chain_id, None)
+        else:
+            # An explicitly empty variable opts out of a built-in indexer.
+            api_urls.pop(chain_id, None)
+            api_keys.pop(chain_id, None)
+            api_sources.pop(chain_id, None)
+    return api_urls, api_keys, api_sources
 
 
 def load_config() -> Config:
@@ -88,9 +197,12 @@ def load_config() -> Config:
     max_retries = int(os.getenv("REQUEST_RETRIES", "3"))
     backoff = float(os.getenv("REQUEST_BACKOFF_SECONDS", "0.5"))
     ttl = int(os.getenv("CHAINLIST_TTL_SECONDS", "3600"))
-    rpc_urls = _load_rpc_urls_from_env()
+    rpc_urls, rpc_url_sources = _load_rpc_urls_from_env()
     rpc_url_default = os.getenv("RPC_URL")
     rpc_url_default = rpc_url_default.strip() if rpc_url_default else None
+    explorer_api_urls, explorer_api_keys, explorer_api_sources = (
+        _load_explorer_api_config_from_env()
+    )
 
     cache_dir_env = os.getenv("ETHERSCAN_MCP_CACHE_DIR")
     if cache_dir_env is None:
@@ -126,7 +238,11 @@ def load_config() -> Config:
         backoff_seconds=backoff,
         chainlist_ttl_seconds=ttl,
         rpc_urls=rpc_urls,
+        rpc_url_sources=rpc_url_sources,
         rpc_url_default=rpc_url_default,
+        explorer_api_urls=explorer_api_urls,
+        explorer_api_keys=explorer_api_keys,
+        explorer_api_sources=explorer_api_sources,
         cache_dir=cache_dir,
         metadata_fetch_concurrency=metadata_concurrency,
     )

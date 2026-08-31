@@ -81,6 +81,43 @@ GLOBAL_CAVEATS: List[Dict[str, str]] = [
 
 
 CHAIN_CAVEATS: Dict[str, List[Dict[str, str]]] = {
+    # Robinhood Chain mainnet. The public RPC path works, but the official
+    # Blockscout API may present an HTML Cloudflare challenge to non-browser
+    # clients. Testnet currently exposes the same API without that challenge.
+    "4663": [
+        {
+            "tool": tool,
+            "status": STATUS_DEGRADED,
+            "reason": "Robinhood 主网官方 Blockscout API 可能对非浏览器客户端返回 Cloudflare challenge；RPC 读链不受影响。",
+            "workaround": "配置 `BLOCKSCOUT_API_KEY` 改走统一 PRO API，或用 `EXPLORER_API_URL_4663` 指向可直连的兼容索引端点。",
+            "mitigated_by": "blockscout_pro",
+        }
+        for tool in (
+            "fetch_contract",
+            "get_source_file",
+            "get_contract_creation",
+            "list_transactions",
+            "list_token_transfers",
+        )
+    ]
+    + [
+        {
+            "tool": _WILDCARD_MODULE_PROXY,
+            "status": STATUS_DEGRADED,
+            "reason": "默认走 Robinhood 官方限速公共 RPC，只适合低频 latest-state 读取，不承诺生产稳定性或 archive 能力。",
+            "workaround": "生产、批量或历史 state 查询请配置 `RPC_URL_4663` 为 provider/archive endpoint。",
+            "mitigated_by": "rpc_url",
+        }
+    ],
+    "46630": [
+        {
+            "tool": _WILDCARD_MODULE_PROXY,
+            "status": STATUS_DEGRADED,
+            "reason": "默认走 Robinhood 测试网官方限速公共 RPC，只适合开发与低频 latest-state 读取，不承诺 archive 能力。",
+            "workaround": "批量或历史 state 查询请配置 `RPC_URL_46630` 为 provider/archive endpoint。",
+            "mitigated_by": "rpc_url",
+        }
+    ],
     # BSC
     "56": [
         {
@@ -212,15 +249,20 @@ def _expand(caveats: List[Dict[str, str]]) -> List[Dict[str, str]]:
     return out
 
 
-def caveats_for(chain_id: str, rpc_configured: bool) -> List[Dict[str, Any]]:
+def caveats_for(
+    chain_id: str,
+    rpc_configured: bool,
+    blockscout_pro_configured: bool = False,
+) -> List[Dict[str, Any]]:
     """
-    Return caveats for a chain, with `status_effective` reflecting whether
-    a configured RPC_URL_<chainid> mitigates each entry.
+    Return caveats for a chain, with `status_effective` reflecting configured
+    RPC and Blockscout PRO mitigations.
 
     Chain-specific entries from CHAIN_CAVEATS are merged with chain-agnostic
     entries from GLOBAL_CAVEATS. `requires_rpc_url` flips to `ok` when
     rpc_configured=True; everything else stays as-is (paid_tier_only /
-    degraded / unsupported are not RPC-fixable).
+    degraded / unsupported are not RPC-fixable unless they declare a matching
+    `mitigated_by` provider).
 
     Note: `GLOBAL_CAVEATS` for `call_function` / `call_function_series` /
     `get_storage_at` flagging historical-block-tag support flips to `ok`
@@ -232,7 +274,11 @@ def caveats_for(chain_id: str, rpc_configured: bool) -> List[Dict[str, Any]]:
     expanded = _expand(raw)
     for c in expanded:
         status = c.get("status")
-        if rpc_configured and status == STATUS_REQUIRES_RPC:
+        if rpc_configured and (
+            status == STATUS_REQUIRES_RPC or c.get("mitigated_by") == "rpc_url"
+        ):
+            c["status_effective"] = STATUS_OK
+        elif blockscout_pro_configured and c.get("mitigated_by") == "blockscout_pro":
             c["status_effective"] = STATUS_OK
         else:
             c["status_effective"] = status

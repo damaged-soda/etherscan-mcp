@@ -1,11 +1,12 @@
 import time
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 import requests
 
 
 class EtherscanClient:
-    """Thin wrapper around Etherscan API with basic retry."""
+    """Thin wrapper around Etherscan-compatible explorer APIs with basic retry."""
 
     def __init__(
         self,
@@ -15,6 +16,8 @@ class EtherscanClient:
         timeout: int = 10,
         max_retries: int = 3,
         backoff_seconds: float = 0.5,
+        chain_api_urls: Optional[Dict[str, str]] = None,
+        chain_api_keys: Optional[Dict[str, str]] = None,
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
@@ -22,8 +25,17 @@ class EtherscanClient:
         self.timeout = timeout
         self.max_retries = max_retries
         self.backoff_seconds = backoff_seconds
+        self.chain_api_urls = {
+            str(chain_id): str(url).rstrip("/")
+            for chain_id, url in (chain_api_urls or {}).items()
+            if str(url).strip()
+        }
+        self.chain_api_keys = {
+            str(chain_id): str(key)
+            for chain_id, key in (chain_api_keys or {}).items()
+            if str(key).strip()
+        }
         self.session = requests.Session()
-        self.session.headers.update({"X-API-Key": api_key})
 
     def get_contract_source(self, address: str) -> Dict[str, Any]:
         params = {
@@ -172,6 +184,46 @@ class EtherscanClient:
     def get_chainlist(self, chainlist_url: str) -> Dict[str, Any]:
         return self._request_url(chainlist_url, params={})
 
+    def api_url(self, chain_id: Optional[str] = None) -> str:
+        return self.chain_api_urls.get(str(chain_id or self.chain_id), self.base_url)
+
+    def indexer_name(self, chain_id: Optional[str] = None) -> str:
+        hostname = (urlparse(self.api_url(chain_id)).hostname or "").lower()
+        if "blockscout" in hostname or hostname.endswith("chain.robinhood.com"):
+            return "blockscout"
+        return "etherscan"
+
+    @staticmethod
+    def _origin(url: str) -> tuple[str, str, Optional[int]]:
+        parsed = urlparse(url)
+        return parsed.scheme.lower(), (parsed.hostname or "").lower(), parsed.port
+
+    def _uses_etherscan_credentials(self, url: str) -> bool:
+        # ETHERSCAN_API_KEY is scoped to the configured Etherscan base origin.
+        # Chain-specific Blockscout/custom indexers never receive it implicitly.
+        return self._origin(url) == self._origin(self.base_url)
+
+    @staticmethod
+    def _is_blockscout_pro(url: str) -> bool:
+        return (urlparse(url).hostname or "").lower() == "api.blockscout.com"
+
+    @staticmethod
+    def _safe_request_error(url: str, exc: requests.RequestException) -> ValueError:
+        parsed = urlparse(url)
+        hostname = parsed.hostname or ""
+        display_host = f"[{hostname}]" if ":" in hostname else hostname
+        if parsed.port is not None:
+            display_host = f"{display_host}:{parsed.port}"
+        safe_target = (
+            f"{parsed.scheme}://{display_host}/***" if display_host else "explorer API"
+        )
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+        reason = getattr(response, "reason", None)
+        detail = " ".join(str(value) for value in (status, reason) if value)
+        suffix = f" ({detail})" if detail else ""
+        return ValueError(f"Explorer API request failed for {safe_target}{suffix}.")
+
     def _is_rate_limit_payload(self, payload: Any) -> bool:
         if not isinstance(payload, dict):
             return False
@@ -200,8 +252,19 @@ class EtherscanClient:
             or "too many requests" in haystack
         )
 
-    def _request_url(self, url: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        merged = {**(params or {}), "apikey": self.api_key}
+    def _request_url(
+        self,
+        url: str,
+        params: Dict[str, Any],
+        chain_api_key: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        merged = dict(params or {})
+        headers: Dict[str, str] = {}
+        if chain_api_key and self._is_blockscout_pro(url):
+            merged["apikey"] = chain_api_key
+        elif self.api_key and self._uses_etherscan_credentials(url):
+            merged["apikey"] = self.api_key
+            headers["X-API-Key"] = self.api_key
         last_error: Optional[Exception] = None
 
         for attempt in range(1, self.max_retries + 1):
@@ -209,6 +272,7 @@ class EtherscanClient:
                 response = self.session.get(
                     url,
                     params=merged,
+                    headers=headers,
                     timeout=self.timeout,
                 )
                 if response.status_code >= 500 and attempt < self.max_retries:
@@ -221,18 +285,30 @@ class EtherscanClient:
                     time.sleep(self.backoff_seconds * attempt)
                     continue
                 return payload
+            except requests.exceptions.JSONDecodeError as exc:
+                last_error = exc
+                if attempt < self.max_retries:
+                    time.sleep(self.backoff_seconds * attempt)
+                else:
+                    label = self.indexer_name() if url == self.api_url() else "etherscan"
+                    raise ValueError(
+                        f"Failed to parse response from {label.capitalize()}."
+                    ) from None
             except requests.RequestException as exc:
                 last_error = exc
                 if attempt < self.max_retries:
                     time.sleep(self.backoff_seconds * attempt)
                 else:
-                    raise
+                    raise self._safe_request_error(url, exc) from None
             except ValueError as exc:
                 last_error = exc
                 if attempt < self.max_retries:
                     time.sleep(self.backoff_seconds * attempt)
                 else:
-                    raise ValueError("Failed to parse response from Etherscan.") from exc
+                    label = self.indexer_name() if url == self.api_url() else "etherscan"
+                    raise ValueError(
+                        f"Failed to parse response from {label.capitalize()}."
+                    ) from exc
 
         if last_error:
             raise last_error
@@ -240,40 +316,13 @@ class EtherscanClient:
         raise RuntimeError("Request failed without raising an exception.")
 
     def _request(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        merged = {**params, "apikey": self.api_key}
-        last_error: Optional[Exception] = None
-
-        for attempt in range(1, self.max_retries + 1):
-            try:
-                response = self.session.get(
-                    self.base_url,
-                    params=merged,
-                    timeout=self.timeout,
-                )
-                if response.status_code >= 500 and attempt < self.max_retries:
-                    time.sleep(self.backoff_seconds * attempt)
-                    continue
-
-                response.raise_for_status()
-                payload = response.json()
-                if self._is_rate_limit_payload(payload) and attempt < self.max_retries:
-                    time.sleep(self.backoff_seconds * attempt)
-                    continue
-                return payload
-            except requests.RequestException as exc:
-                last_error = exc
-                if attempt < self.max_retries:
-                    time.sleep(self.backoff_seconds * attempt)
-                else:
-                    raise
-            except ValueError as exc:
-                last_error = exc
-                if attempt < self.max_retries:
-                    time.sleep(self.backoff_seconds * attempt)
-                else:
-                    raise ValueError("Failed to parse response from Etherscan.") from exc
-
-        if last_error:
-            raise last_error
-
-        raise RuntimeError("Request failed without raising an exception.")
+        url = self.api_url()
+        merged = dict(params)
+        if self._is_blockscout_pro(url):
+            chain_id = str(merged.pop("chainid", self.chain_id))
+            merged["chain_id"] = chain_id
+        return self._request_url(
+            url,
+            merged,
+            chain_api_key=self.chain_api_keys.get(str(self.chain_id)),
+        )

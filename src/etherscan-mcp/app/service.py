@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import hashlib
 from decimal import Decimal, getcontext
+from urllib.parse import urlparse
 
 from .cache import ContractCache
 from .capabilities import build_route_hints, caveats_for, has_caveats
@@ -73,6 +74,8 @@ class ContractService:
             timeout=config.request_timeout,
             max_retries=config.max_retries,
             backoff_seconds=config.backoff_seconds,
+            chain_api_urls=config.explorer_api_urls,
+            chain_api_keys=config.explorer_api_keys,
         )
         self.chains = ChainRegistry(
             client=self.client,
@@ -192,7 +195,7 @@ class ContractService:
                 "tx_hash": str(tx_hash).lower() if tx_hash else "",
                 "block_number": str(block_number) if block_number is not None else "",
                 "timestamp": str(timestamp) if timestamp is not None else None,
-                "source": "etherscan",
+                "source": self.client.indexer_name(chain_id),
                 "complete": bool(creator and tx_hash),
             }
             self.creation_cache.set(normalized_address, chain_id, data)
@@ -1921,20 +1924,55 @@ class ContractService:
     def resolve_chain(self, network: str) -> Dict[str, Any]:
         """
         Public wrapper around ChainRegistry.resolve that also attaches
-        rpc_configured + caveats so MCP callers see plan/RPC limits up front.
+        RPC availability/provenance + caveats so callers see limits up front.
         """
         if network is None or str(network).strip() == "":
             raise ValueError("network must be a non-empty string.")
         label, cid, meta = self.chains.resolve(str(network))
-        rpc_configured = bool(self.config.rpc_urls.get(str(cid)))
+        rpc_available = bool(self.config.rpc_urls.get(str(cid)))
+        rpc_source = self.config.rpc_url_sources.get(str(cid)) if rpc_available else None
+        rpc_configured = rpc_source in {"alchemy", "env", "programmatic"}
+        configured_indexer_url = self.config.explorer_api_urls.get(str(cid))
+        effective_indexer_url = configured_indexer_url or self.config.base_url
+        indexer_available = bool(effective_indexer_url)
+        indexer_source = (
+            self.config.explorer_api_sources.get(str(cid))
+            if configured_indexer_url
+            else ("etherscan" if indexer_available else None)
+        )
+        blockscout_pro_configured = indexer_source == "blockscout_pro"
         return {
             "input": network,
             "network": label,
             "chain_id": cid,
             "meta": meta,
             "rpc_configured": rpc_configured,
-            "caveats": caveats_for(cid, rpc_configured),
+            "rpc_available": rpc_available,
+            "rpc_source": rpc_source,
+            "indexer_available": indexer_available,
+            "indexer_source": indexer_source,
+            "indexer_url": self._safe_indexer_url(effective_indexer_url, indexer_source),
+            "caveats": caveats_for(
+                cid,
+                rpc_configured,
+                blockscout_pro_configured=blockscout_pro_configured,
+            ),
         }
+
+    @staticmethod
+    def _safe_indexer_url(url: Optional[str], source: Optional[str]) -> Optional[str]:
+        if not url:
+            return None
+        parsed = urlparse(url)
+        hostname = parsed.hostname or ""
+        display_host = f"[{hostname}]" if ":" in hostname else hostname
+        if parsed.port is not None:
+            display_host = f"{display_host}:{parsed.port}"
+        if not display_host:
+            return None
+        if source in {"blockscout_pro", "builtin", "etherscan"}:
+            return f"{parsed.scheme}://{display_host}{parsed.path or ''}"
+        return f"{parsed.scheme}://{display_host}/***"
 
     def list_chains_with_caveats(self, include_degraded: bool = True) -> Dict[str, Any]:
         """
@@ -1990,8 +2028,10 @@ class ContractService:
         network: str,
         chain_id: str,
     ) -> Dict[str, Any]:
+        indexer = self.client.indexer_name(chain_id)
+        indexer_label = indexer.capitalize()
         if not isinstance(payload, dict):
-            raise ValueError("Unexpected response from Etherscan.")
+            raise ValueError(f"Unexpected response from {indexer_label}.")
 
         status = str(payload.get("status", "")).strip()
         message = payload.get("message", "")
@@ -2003,7 +2043,7 @@ class ContractService:
                 detail = result
             elif isinstance(result, list) and result:
                 detail = result[0] if isinstance(result[0], str) else ""
-            raise ValueError(f"Etherscan error: {detail or message or 'unknown error'}.")
+            raise ValueError(f"{indexer_label} error: {detail or message or 'unknown error'}.")
 
         entry = result[0]
         abi_raw = entry.get("ABI", "[]")
@@ -2028,7 +2068,7 @@ class ContractService:
             "verified": True,
             "proxy": is_proxy,
             "implementation": implementation,
-            "proxy_type": "etherscan" if is_proxy else None,
+            "proxy_type": indexer if is_proxy else None,
         }
 
     def _proxy_info_from_contract(self, contract: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -2038,7 +2078,8 @@ class ContractService:
         is_proxy = bool(contract.get("proxy")) or bool(impl)
         if not is_proxy:
             return None
-        evidence = ["Etherscan getsourcecode Proxy/Implementation fields"]
+        indexer = self.client.indexer_name(contract.get("chain_id"))
+        evidence = [f"{indexer.capitalize()} getsourcecode Proxy/Implementation fields"]
         if impl:
             evidence.append(f"implementation field -> {impl}")
         return {
@@ -2048,11 +2089,12 @@ class ContractService:
             "is_proxy": True,
             "implementation": impl,
             "admin": None,
-            "proxy_type": contract.get("proxy_type") or "etherscan",
+            "proxy_type": contract.get("proxy_type") or indexer,
             "evidence": evidence,
         }
 
     def _parse_abi(self, abi_raw: Any, address: str, network: str, chain_id: str) -> Any:
+        indexer_label = self.client.indexer_name(chain_id).capitalize()
         if abi_raw is None:
             abi_raw = "[]"
 
@@ -2061,7 +2103,7 @@ class ContractService:
                 abi_raw = str(abi_raw)
             except Exception as exc:
                 raise ValueError(
-                    f"Invalid ABI returned from Etherscan for {address} "
+                    f"Invalid ABI returned from {indexer_label} for {address} "
                     f"(network={network}, chain_id={chain_id}). ABI field could not be stringified."
                 ) from exc
 
@@ -2075,11 +2117,11 @@ class ContractService:
             lowered = abi_raw.strip().lower()
             if "not verified" in lowered or "source code not verified" in lowered:
                 raise ValueError(
-                    f"Contract {address} is not verified on Etherscan; ABI is unavailable "
+                    f"Contract {address} is not verified on {indexer_label}; ABI is unavailable "
                     f"(network={network}, chain_id={chain_id}). ABI field: {preview}"
                 ) from exc
             raise ValueError(
-                f"Invalid ABI returned from Etherscan for {address} "
+                f"Invalid ABI returned from {indexer_label} for {address} "
                 f"(network={network}, chain_id={chain_id}). ABI field: {preview}"
             ) from exc
 
@@ -2112,8 +2154,9 @@ class ContractService:
         return [{"filename": "Contract.sol", "content": raw}]
 
     def _extract_result_list(self, payload: Dict[str, Any], require_non_empty: bool) -> List[Any]:
+        indexer_label = self.client.indexer_name().capitalize()
         if not isinstance(payload, dict):
-            raise ValueError("Unexpected response from Etherscan.")
+            raise ValueError(f"Unexpected response from {indexer_label}.")
 
         status = str(payload.get("status", "")).strip()
         message = payload.get("message", "")
@@ -2122,22 +2165,22 @@ class ContractService:
         if not status and isinstance(result, list):
             if result or not require_non_empty:
                 return result
-            raise ValueError("Etherscan returned an empty result.")
+            raise ValueError(f"{indexer_label} returned an empty result.")
 
         if status == "1":
             if isinstance(result, list):
                 if result:
                     return result
                 if require_non_empty:
-                    raise ValueError("Etherscan returned an empty result.")
+                    raise ValueError(f"{indexer_label} returned an empty result.")
                 return []
-            raise ValueError("Unexpected response from Etherscan.")
+            raise ValueError(f"Unexpected response from {indexer_label}.")
 
         # Etherscan commonly returns status=0 with "No ... found" (or empty list) for empty sets.
         if status == "0":
             if isinstance(message, str) and message.lower().startswith("no"):
                 if require_non_empty:
-                    raise ValueError(f"Etherscan error: {message}.")
+                    raise ValueError(f"{indexer_label} error: {message}.")
                 return []
             if result == [] and not require_non_empty:
                 return []
@@ -2147,11 +2190,12 @@ class ContractService:
             detail = result
         elif isinstance(result, list) and result:
             detail = result[0] if isinstance(result[0], str) else ""
-        raise ValueError(f"Etherscan error: {detail or message or 'unknown error'}.")
+        raise ValueError(f"{indexer_label} error: {detail or message or 'unknown error'}.")
 
     def _extract_proxy_result(self, payload: Dict[str, Any], allow_none: bool = False) -> Any:
+        indexer_label = self.client.indexer_name().capitalize()
         if not isinstance(payload, dict):
-            raise ValueError("Unexpected response from Etherscan.")
+            raise ValueError(f"Unexpected response from {indexer_label}.")
 
         # JSON-RPC style error object from Etherscan proxy endpoints
         error_obj = payload.get("error")
@@ -2167,7 +2211,7 @@ class ContractService:
             if data:
                 parts.append(str(data))
             detail = ": ".join(parts) if parts else "unknown error"
-            raise ValueError(f"Etherscan error: {detail}.")
+            raise ValueError(f"{indexer_label} error: {detail}.")
 
         # Etherscan "module" style response: status/message/result (including rate-limit NOTOK)
         if "status" in payload or "message" in payload:
@@ -2180,7 +2224,7 @@ class ContractService:
                 return None
 
             detail = result if isinstance(result, str) else ""
-            raise ValueError(f"Etherscan error: {detail or message or 'unknown error'}.")
+            raise ValueError(f"{indexer_label} error: {detail or message or 'unknown error'}.")
 
         # JSON-RPC style success response: {jsonrpc,id,result}
         if "result" in payload:
@@ -2191,11 +2235,11 @@ class ContractService:
                 try:
                     return self._normalize_hex_string(res, "result")
                 except ValueError:
-                    raise ValueError(f"Etherscan error: {res}.")
+                    raise ValueError(f"{indexer_label} error: {res}.")
             if isinstance(res, (dict, list)):
                 return res
 
-        raise ValueError("Unexpected response from Etherscan.")
+        raise ValueError(f"Unexpected response from {indexer_label}.")
 
     def _normalize_block_range(
         self, start: Optional[Union[int, str]], end: Optional[Union[int, str]]

@@ -1,6 +1,4 @@
-"""
-MCP server exposing contract fetch capability via Etherscan V2.
-"""
+"""MCP server exposing explorer indexer and EVM JSON-RPC read capabilities."""
 
 import argparse
 from collections.abc import Mapping
@@ -13,7 +11,7 @@ from .service import ContractService
 
 server = FastMCP(
     name="etherscan-mcp",
-    instructions="Fetch verified contract ABI and source code via Etherscan API V2.",
+    instructions="Fetch verified contract ABI/source via Etherscan-compatible indexers and read EVM state via JSON-RPC.",
 )
 
 _service: Optional[ContractService] = None
@@ -49,7 +47,7 @@ def _normalize_array_param(value: Optional[Any], name: str) -> Optional[list]:
 @server.tool(
     name="fetch_contract",
     title="Fetch Contract Details",
-    description="Fetch verified contract ABI and source code from Etherscan. Use inline_limit/force_inline to control inlined source size.",
+    description="Fetch verified contract ABI and source code from the chain's configured explorer indexer. Use inline_limit/force_inline to control inlined source size.",
 )
 def fetch_contract(
     address: str,
@@ -179,7 +177,7 @@ def call_function(
 @server.tool(
     name="call_function_series",
     title="Call Read-Only Function Series",
-    description="Call the same read-only contract function across a historical block range via JSON-RPC batch eth_call. Requires RPC_URL_<chainid> backed by an archive node. `args` must be an array.",
+    description="Call the same read-only contract function across a historical block range via JSON-RPC batch eth_call. Requires an archive-capable RPC (RPC_URL_<chainid>, or Robinhood ALCHEMY_API_KEY). `args` must be an array.",
 )
 def call_function_series(
     address: str,
@@ -314,7 +312,7 @@ def get_block_time_by_number(block: Any, network: Optional[str] = None) -> dict:
 @server.tool(
     name="list_chains",
     title="List Supported Chains",
-    description="List chains supported by Etherscan V2 via /v2/chainlist. Each row carries `has_caveats` to flag chains with known plan/RPC limits — call chain_capabilities for detail.",
+    description="List Etherscan V2 chains plus built-in explorer presets. Each row carries `has_caveats` to flag known plan/RPC limits.",
 )
 def list_chains(include_degraded: bool = True) -> dict:
     svc = _get_service()
@@ -324,7 +322,7 @@ def list_chains(include_degraded: bool = True) -> dict:
 @server.tool(
     name="resolve_chain",
     title="Resolve Network To Chain ID",
-    description="Resolve a network string (name/alias) to chainid via chainlist. Returns rpc_configured + per-tool caveats so Etherscan plan / RPC limits (e.g. Base/BSC free tier) surface up front. Prefer numeric chainid for precision.",
+    description="Resolve a network string (name/alias) to chainid via local presets and chainlist. Returns RPC/indexer provenance + per-tool caveats. Prefer numeric chainid for precision.",
 )
 def resolve_chain(network: str) -> dict:
     svc = _get_service()
