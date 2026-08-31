@@ -92,6 +92,35 @@ class RobinhoodConfigTest(unittest.TestCase):
         self.assertEqual(config.rpc_url_sources["4663"], "env")
         self.assertEqual(config.rpc_url_sources["46630"], "alchemy")
 
+    def test_rpc_alias_overrides_alchemy(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ETHERSCAN_API_KEY": "test-key",
+                "ALCHEMY_API_KEY": "alchemy-key",
+                "RPC_4663": "https://alias.example/rpc",
+            },
+            clear=True,
+        ):
+            config = load_config()
+
+        self.assertEqual(config.rpc_urls["4663"], "https://alias.example/rpc")
+        self.assertEqual(config.rpc_url_sources["4663"], "env")
+
+    def test_alchemy_key_does_not_add_non_preset_chain_rpc(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "ETHERSCAN_API_KEY": "test-key",
+                "ALCHEMY_API_KEY": "alchemy-key",
+            },
+            clear=True,
+        ):
+            config = load_config()
+
+        self.assertNotIn("1", config.rpc_urls)
+        self.assertNotIn("1", config.rpc_url_sources)
+
     def test_explicit_empty_rpc_disables_alchemy_for_that_chain(self) -> None:
         with patch.dict(
             os.environ,

@@ -257,7 +257,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Call the same read-only function across a historical block range",
         description=(
             "Call the same read-only function across a historical block range via JSON-RPC batch eth_call.\n"
-            "Requires RPC_URL_<chainid> backed by an archive node.\n"
+            "Requires an archive-capable RPC (RPC_URL_<chainid>, or Robinhood ALCHEMY_API_KEY).\n"
             "Example:\n"
             "  call-function-series --address 0xdAC1... --function 'totalSupply()' \\\n"
             "      --from-block 20000000 --to-block 20001000 --stride 100 --decimals 6"

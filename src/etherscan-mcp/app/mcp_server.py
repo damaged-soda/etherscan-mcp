@@ -177,7 +177,7 @@ def call_function(
 @server.tool(
     name="call_function_series",
     title="Call Read-Only Function Series",
-    description="Call the same read-only contract function across a historical block range via JSON-RPC batch eth_call. Requires RPC_URL_<chainid> backed by an archive node. `args` must be an array.",
+    description="Call the same read-only contract function across a historical block range via JSON-RPC batch eth_call. Requires an archive-capable RPC (RPC_URL_<chainid>, or Robinhood ALCHEMY_API_KEY). `args` must be an array.",
 )
 def call_function_series(
     address: str,

@@ -86,7 +86,7 @@ RPC_URL_4663=https://<provider-endpoint> python -m app call-function-series \
   --from-block 100000 --to-block 110000 --stride 100
 ```
 
-若设置 `ALCHEMY_API_KEY`，主网 / 测试网会优先使用官方 Alchemy endpoint，并返回 `rpc_source=alchemy`、`rpc_configured=true`；显式 `RPC_URL_4663` / `RPC_URL_46630` 仍具有最高优先级。未设置时才回退内置公共 RPC，此时 `rpc_available=true`、`rpc_source=builtin`、`rpc_configured=false`，历史 state caveat 不会被误标成 `ok`。环境变量覆盖时 `rpc_source=env`；直接构造 `Config` 注入 URL 时为 `programmatic`。`call_function_series` 或指定历史 `block_tag` 仍取决于所用 Alchemy plan / endpoint 是否提供 archive state。主网 Blockscout 偶尔会对非浏览器客户端返回 Cloudflare challenge；可重试或用 `EXPLORER_API_URL_4663` 覆盖为可直连的兼容索引端点。Robinhood Chain 与 Robinhood 券商 / crypto account API 相互独立，本仓不访问账户、不下单。
+若设置 `ALCHEMY_API_KEY`，主网 / 测试网会优先使用官方 Alchemy endpoint，并返回 `rpc_source=alchemy`、`rpc_configured=true`；显式 `RPC_URL_4663` / `RPC_URL_46630` 仍具有最高优先级。未设置时才回退内置公共 RPC，此时 `rpc_available=true`、`rpc_source=builtin`、`rpc_configured=false`，历史 state caveat 不会被误标成 `ok`。环境变量覆盖时 `rpc_source=env`；直接构造 `Config` 注入 URL 时为 `programmatic`。`call_function_series` 或指定历史 `block_tag` 仍取决于所用 Alchemy plan / endpoint 是否提供 archive state。若 Alchemy key 失效，会明确返回脱敏的 401；修复 key、unset `ALCHEMY_API_KEY` 回退公共 RPC，或显式把 `RPC_URL_4663` 指回 `https://rpc.mainnet.chain.robinhood.com`。主网 Blockscout 偶尔会对非浏览器客户端返回 Cloudflare challenge；可重试或用 `EXPLORER_API_URL_4663` 覆盖为可直连的兼容索引端点。Robinhood Chain 与 Robinhood 券商 / crypto account API 相互独立，本仓不访问账户、不下单。
 
 ## MCP（能力保留，本机注册已退役）
 
@@ -148,7 +148,7 @@ python -m app.mcp_server --transport streamable-http --host 127.0.0.1 --port 870
 - **块号输入兼容**：`start_block` / `end_block` / `from_block` / `to_block` 接受整数、十进制字符串、`0x` 十六进制字符串。非法输入报错提示"十进制或 0x 前缀"。
 - **未验证合约**：`getsourcecode` 返回典型未验证文案（如 `Contract source code not verified`）时，明确报错"合约未验证导致 ABI 不可用"，附 address/network/chain_id 与截断摘要。
 - **`call_function`**：基础校验 0x / 偶数字节 / 至少 4 字节 selector；ABI 命中时按 outputs 解码（含 tuple / 数组），数值类支持 `decimals` hint 计算 `value_scaled`；ABI 加载但 selector 缺失时软失败放行 raw `eth_call`，`decoded.warning` 提示；无参函数可省略括号（`readTokens` 等价 `readTokens()`）。
-- **`call_function_series`**：对同一个 `data` 或 `function+args` 从 `from_block` 开始、按 `stride` 递增采样，直到下一个点会超过 `to_block` 为止；例如 `from_block=10,to_block=15,stride=3` 采样 `10,13`，不会强制补尾块 `15`。返回 `series[] = {block_number, block_tag, data, decoded}`。只走 JSON-RPC batch，不回退 Etherscan；必须配置对应链的 archive `RPC_URL_<chainid>`。`batch_size` 默认 25，用来控制单次 JSON-RPC batch 大小；单次最多 10000 个采样点，超出要加大 `stride` 或缩小 block range。
+- **`call_function_series`**：对同一个 `data` 或 `function+args` 从 `from_block` 开始、按 `stride` 递增采样，直到下一个点会超过 `to_block` 为止；例如 `from_block=10,to_block=15,stride=3` 采样 `10,13`，不会强制补尾块 `15`。返回 `series[] = {block_number, block_tag, data, decoded}`。只走 JSON-RPC batch，不回退 explorer；必须有 archive-capable RPC（显式 `RPC_URL_<chainid>`，或 Robinhood 的 `ALCHEMY_API_KEY` 路径）。`batch_size` 默认 25，用来控制单次 JSON-RPC batch 大小；单次最多 10000 个采样点，超出要加大 `stride` 或缩小 block range。
 - **代理感知**：`fetch_contract` 解析 explorer indexer 的 Proxy/Implementation 元数据，规范化实现地址写入 proxy cache；`call_function` ABI 选择优先实现合约（来自元数据或 EIP-1967 detect_proxy）；探测异常不缓存"非代理"，避免假阴性；缺实现 ABI 不阻断调用，仅解码受限。
 - **`convert`**：`from_unit` / `to_unit` 支持 `hex` / `dec` / `human` / `wei` / `gwei` / `eth`，`decimals` 默认 18；内部用整数 / Decimal 避免浮点丢精度；分数精度超限会报错。
 - **`get_transaction`**：优先 RPC 的 `eth_getTransactionByHash` + `eth_getTransactionReceipt`，未配 RPC 回退 Etherscan proxy；`tx_hash` 需 `0x` + 64 hex。
@@ -167,7 +167,7 @@ python -m app.mcp_server --transport streamable-http --host 127.0.0.1 --port 870
 - **`get_contract_creation` 在 BSC 等链可能 NOTOK**：建议配 `RPC_URL_<chainid>` 启用 RPC 二分回退；internal create 场景可能仅返回 `block_number/timestamp`（`complete=false`），且需要 archive / full-history 节点。`status=degraded`。
 - **`module=proxy` 在 Base / BSC 等链 free tier 受限**：会报 `Free API access is not supported for this chain`，配 `RPC_URL_<chainid>` 绕开。`status=requires_rpc_url`，配上 RPC 后 `status_effective` 自动降级为 `ok`。
 - **Robinhood 主网 Blockscout 偶发 Cloudflare challenge**：RPC 类工具仍可用；`fetch_contract` / `get_source_file` / `get_contract_creation` / `list_transactions` / `list_token_transfers` 可能收到 HTML challenge。重试，或用 `EXPLORER_API_URL_4663` 指向可直连的 Etherscan-compatible / Blockscout indexer。`status=degraded`。
-- **Robinhood 内置公共 RPC 是 degraded 路径**：主网 / 测试网都只适合低频 latest-state 读取，生产、批量或历史 state 要显式配置 provider/archive endpoint；此时 `rpc_source=env`、`rpc_configured=true`，可缓解的 caveat 才会变成 `status_effective=ok`。
+- **Robinhood 内置公共 RPC 是 degraded 路径**：主网 / 测试网都只适合低频 latest-state 读取，生产、批量或历史 state 要使用 Alchemy 或显式 provider/archive endpoint；此时 `rpc_source=alchemy|env|programmatic`、`rpc_configured=true`，可缓解的 caveat 才会变成 `status_effective=ok`。
 - **`call_function` / `call_function_series` / `get_storage_at` 历史 state 全链不支持（chain-agnostic）**：Etherscan `module=proxy` 对非 `latest|earliest|pending` 的 block_tag **静默忽略**，永远返回 latest state（debug 起来很坑），所有链都一样。当前代码当 RPC 未配且要读历史 state 时**显式报错**（不再静默 fallback）。修复方式：配 archive 节点的 `RPC_URL_<chainid>`，**普通 full node 不够要 archive**（Alchemy / Quicknode / drpc / Ankr / 自建 erigon）。`status=requires_rpc_url`，登记在 `GLOBAL_CAVEATS`，全链生效。`status_effective` 在 `RPC_URL_<chainid>` 配上后会降级为 `ok`，但 archive vs full node 没法从 URL 自动检测，**配错节点会运行时报"historical state not available"**。
 - **新链 / 未列入 caveat 矩阵的链**（HyperEVM、Plasma 等）：默认按"无 caveat"处理。先用 `list_chains` 确认 Etherscan V2 是否覆盖（status=1 为正常），跑任务踩坑后回头补 `capabilities.py`。
 
@@ -192,7 +192,7 @@ python -m app.mcp_server --transport streamable-http --host 127.0.0.1 --port 870
 | `ETHERSCAN_MCP_CACHE_DIR` | `~/.cache/etherscan-mcp` | 持久化 token metadata + contract name 的目录；落 `token_metadata.json` 与 `contract_names.json`，按 `(chainid, address)` 键。**进程重启后避免重新拉同一批 token / 同一批合约名**，批量扫地址收益最明显。设空字符串完全禁用持久化。 |
 | `METADATA_FETCH_CONCURRENCY` | `5` | `get_transaction_summary` 拉 token metadata（symbol/decimals/name）+ contract name 时的线程池并发数。冷启动一笔 tx 涉及 9 个新 token + 17 个未注解地址时，从串行 ~40s 降到 ~6-8s。设大触发更多 429 / rate limit；`1` 退化回串行。 |
 
-读链类工具（`call_function` / `call_function_series` / `get_storage_at` / `detect_proxy` / `query_logs` / `get_block_by_number` / `get_block_time_by_number` / `get_transaction`）在配了对应 `RPC_URL_<chainid>` 时优先走 RPC；未配则保持原行为，回退 Etherscan `module=proxy`。例外：`call_function_series` 永远只走 RPC，因为它的语义就是历史区块序列采样。
+读链类工具（`call_function` / `call_function_series` / `get_storage_at` / `detect_proxy` / `query_logs` / `get_block_by_number` / `get_block_time_by_number` / `get_transaction`）在对应链有可用 RPC 时优先走 RPC（显式 `RPC_URL_<chainid>`、Robinhood Alchemy 或内置公共端点）；没有时回退 Etherscan `module=proxy`。例外：`call_function_series` 永远只走 RPC，因为它的语义就是历史区块序列采样。
 
 例外：`call_function` / `get_storage_at` 在传了历史 block_tag（hex / decimal block number）但 RPC 未配时，**显式报错**而不再回退 `module=proxy`；`call_function_series` 是历史序列工具，始终要求 RPC —— Etherscan proxy 对历史 tag 静默忽略并返回 latest state，回退会让历史读看起来"成功了"实际上是 latest，比报错更坑。要走历史 block_tag 必须配 archive 节点（详见 [已知限制](#已知限制)）。
 
