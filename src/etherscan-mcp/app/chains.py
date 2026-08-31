@@ -209,7 +209,7 @@ class ChainRegistry:
 
         # Built-in presets must resolve even when Etherscan chainlist is down.
         exact = self._index.get(q)
-        if exact:
+        if exact and all(chainid in NETWORK_PRESETS for chainid in exact):
             return self._pick_or_raise(q, exact, matched_by="exact")
 
         self.refresh()

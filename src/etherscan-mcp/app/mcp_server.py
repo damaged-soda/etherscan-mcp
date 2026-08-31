@@ -322,7 +322,7 @@ def list_chains(include_degraded: bool = True) -> dict:
 @server.tool(
     name="resolve_chain",
     title="Resolve Network To Chain ID",
-    description="Resolve a network string (name/alias) to chainid via local presets and chainlist. Returns rpc_configured + per-tool caveats. Prefer numeric chainid for precision.",
+    description="Resolve a network string (name/alias) to chainid via local presets and chainlist. Returns rpc_available/rpc_source/rpc_configured + per-tool caveats. Prefer numeric chainid for precision.",
 )
 def resolve_chain(network: str) -> dict:
     svc = _get_service()

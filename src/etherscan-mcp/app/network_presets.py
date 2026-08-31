@@ -38,6 +38,10 @@ def default_rpc_urls() -> Dict[str, str]:
     }
 
 
+def default_rpc_url_sources() -> Dict[str, str]:
+    return {chain_id: "builtin" for chain_id in default_rpc_urls()}
+
+
 def default_explorer_api_urls() -> Dict[str, str]:
     return {
         chain_id: str(preset["apiurl"])

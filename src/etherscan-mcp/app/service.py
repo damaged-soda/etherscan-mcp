@@ -1922,18 +1922,22 @@ class ContractService:
     def resolve_chain(self, network: str) -> Dict[str, Any]:
         """
         Public wrapper around ChainRegistry.resolve that also attaches
-        rpc_configured + caveats so MCP callers see plan/RPC limits up front.
+        RPC availability/provenance + caveats so callers see limits up front.
         """
         if network is None or str(network).strip() == "":
             raise ValueError("network must be a non-empty string.")
         label, cid, meta = self.chains.resolve(str(network))
-        rpc_configured = bool(self.config.rpc_urls.get(str(cid)))
+        rpc_available = bool(self.config.rpc_urls.get(str(cid)))
+        rpc_source = self.config.rpc_url_sources.get(str(cid)) if rpc_available else None
+        rpc_configured = rpc_source == "env"
         return {
             "input": network,
             "network": label,
             "chain_id": cid,
             "meta": meta,
             "rpc_configured": rpc_configured,
+            "rpc_available": rpc_available,
+            "rpc_source": rpc_source,
             "caveats": caveats_for(cid, rpc_configured),
         }
 

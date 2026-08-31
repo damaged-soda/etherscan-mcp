@@ -98,6 +98,24 @@ CHAIN_CAVEATS: Dict[str, List[Dict[str, str]]] = {
             "list_transactions",
             "list_token_transfers",
         )
+    ]
+    + [
+        {
+            "tool": _WILDCARD_MODULE_PROXY,
+            "status": STATUS_DEGRADED,
+            "reason": "默认走 Robinhood 官方限速公共 RPC，只适合低频 latest-state 读取，不承诺生产稳定性或 archive 能力。",
+            "workaround": "生产、批量或历史 state 查询请配置 `RPC_URL_4663` 为 provider/archive endpoint。",
+            "mitigated_by": "rpc_url",
+        }
+    ],
+    "46630": [
+        {
+            "tool": _WILDCARD_MODULE_PROXY,
+            "status": STATUS_DEGRADED,
+            "reason": "默认走 Robinhood 测试网官方限速公共 RPC，只适合开发与低频 latest-state 读取，不承诺 archive 能力。",
+            "workaround": "批量或历史 state 查询请配置 `RPC_URL_46630` 为 provider/archive endpoint。",
+            "mitigated_by": "rpc_url",
+        }
     ],
     # BSC
     "56": [
@@ -250,7 +268,9 @@ def caveats_for(chain_id: str, rpc_configured: bool) -> List[Dict[str, Any]]:
     expanded = _expand(raw)
     for c in expanded:
         status = c.get("status")
-        if rpc_configured and status == STATUS_REQUIRES_RPC:
+        if rpc_configured and (
+            status == STATUS_REQUIRES_RPC or c.get("mitigated_by") == "rpc_url"
+        ):
             c["status_effective"] = STATUS_OK
         else:
             c["status_effective"] = status

@@ -4,7 +4,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Optional
 
-from .network_presets import default_explorer_api_urls, default_rpc_urls, preset_aliases
+from .network_presets import (
+    default_explorer_api_urls,
+    default_rpc_url_sources,
+    default_rpc_urls,
+    preset_aliases,
+)
 
 DEFAULT_BASE_URL = "https://api.etherscan.io/v2/api"
 DEFAULT_CHAINLIST_URL = "https://api.etherscan.io/v2/chainlist"
@@ -37,6 +42,7 @@ class Config:
     backoff_seconds: float = 0.5
     chainlist_ttl_seconds: int = 3600
     rpc_urls: Dict[str, str] = field(default_factory=default_rpc_urls)
+    rpc_url_sources: Dict[str, str] = field(default_factory=default_rpc_url_sources)
     rpc_url_default: Optional[str] = None
     explorer_api_urls: Dict[str, str] = field(default_factory=default_explorer_api_urls)
     # Disk cache directory for stable per-(chain, address) lookups (token
@@ -65,9 +71,10 @@ def resolve_chain_id(network: str, override_chain_id: Optional[str] = None) -> s
     )
 
 
-def _load_rpc_urls_from_env() -> Dict[str, str]:
-    """Load chainid -> RPC URL mapping from environment variables."""
+def _load_rpc_urls_from_env() -> tuple[Dict[str, str], Dict[str, str]]:
+    """Load chainid -> RPC URL mapping plus builtin/env provenance."""
     rpc_urls = default_rpc_urls()
+    rpc_url_sources = default_rpc_url_sources()
     for key, value in os.environ.items():
         match = _RPC_URL_ENV_RE.match(key)
         if not match:
@@ -76,7 +83,12 @@ def _load_rpc_urls_from_env() -> Dict[str, str]:
         url = (value or "").strip()
         if url:
             rpc_urls[chain_id] = url
-    return rpc_urls
+            rpc_url_sources[chain_id] = "env"
+        else:
+            # An explicitly empty variable opts out of a built-in public RPC.
+            rpc_urls.pop(chain_id, None)
+            rpc_url_sources.pop(chain_id, None)
+    return rpc_urls, rpc_url_sources
 
 
 def _load_explorer_api_urls_from_env() -> Dict[str, str]:
@@ -90,6 +102,9 @@ def _load_explorer_api_urls_from_env() -> Dict[str, str]:
         url = (value or "").strip().rstrip("/")
         if url:
             api_urls[chain_id] = url
+        else:
+            # An explicitly empty variable opts out of a built-in indexer.
+            api_urls.pop(chain_id, None)
     return api_urls
 
 
@@ -107,7 +122,7 @@ def load_config() -> Config:
     max_retries = int(os.getenv("REQUEST_RETRIES", "3"))
     backoff = float(os.getenv("REQUEST_BACKOFF_SECONDS", "0.5"))
     ttl = int(os.getenv("CHAINLIST_TTL_SECONDS", "3600"))
-    rpc_urls = _load_rpc_urls_from_env()
+    rpc_urls, rpc_url_sources = _load_rpc_urls_from_env()
     rpc_url_default = os.getenv("RPC_URL")
     rpc_url_default = rpc_url_default.strip() if rpc_url_default else None
     explorer_api_urls = _load_explorer_api_urls_from_env()
@@ -146,6 +161,7 @@ def load_config() -> Config:
         backoff_seconds=backoff,
         chainlist_ttl_seconds=ttl,
         rpc_urls=rpc_urls,
+        rpc_url_sources=rpc_url_sources,
         rpc_url_default=rpc_url_default,
         explorer_api_urls=explorer_api_urls,
         cache_dir=cache_dir,

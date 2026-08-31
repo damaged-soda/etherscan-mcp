@@ -30,7 +30,6 @@ class EtherscanClient:
             if str(url).strip()
         }
         self.session = requests.Session()
-        self.session.headers.update({"X-API-Key": api_key})
 
     def get_contract_source(self, address: str) -> Dict[str, Any]:
         params = {
@@ -188,6 +187,33 @@ class EtherscanClient:
             return "blockscout"
         return "etherscan"
 
+    @staticmethod
+    def _origin(url: str) -> tuple[str, str, Optional[int]]:
+        parsed = urlparse(url)
+        return parsed.scheme.lower(), (parsed.hostname or "").lower(), parsed.port
+
+    def _uses_etherscan_credentials(self, url: str) -> bool:
+        # ETHERSCAN_API_KEY is scoped to the configured Etherscan base origin.
+        # Chain-specific Blockscout/custom indexers never receive it implicitly.
+        return self._origin(url) == self._origin(self.base_url)
+
+    @staticmethod
+    def _safe_request_error(url: str, exc: requests.RequestException) -> ValueError:
+        parsed = urlparse(url)
+        hostname = parsed.hostname or ""
+        display_host = f"[{hostname}]" if ":" in hostname else hostname
+        if parsed.port is not None:
+            display_host = f"{display_host}:{parsed.port}"
+        safe_target = (
+            f"{parsed.scheme}://{display_host}/***" if display_host else "explorer API"
+        )
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+        reason = getattr(response, "reason", None)
+        detail = " ".join(str(value) for value in (status, reason) if value)
+        suffix = f" ({detail})" if detail else ""
+        return ValueError(f"Explorer API request failed for {safe_target}{suffix}.")
+
     def _is_rate_limit_payload(self, payload: Any) -> bool:
         if not isinstance(payload, dict):
             return False
@@ -217,7 +243,11 @@ class EtherscanClient:
         )
 
     def _request_url(self, url: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        merged = {**(params or {}), "apikey": self.api_key}
+        merged = dict(params or {})
+        headers: Dict[str, str] = {}
+        if self.api_key and self._uses_etherscan_credentials(url):
+            merged["apikey"] = self.api_key
+            headers["X-API-Key"] = self.api_key
         last_error: Optional[Exception] = None
 
         for attempt in range(1, self.max_retries + 1):
@@ -225,6 +255,7 @@ class EtherscanClient:
                 response = self.session.get(
                     url,
                     params=merged,
+                    headers=headers,
                     timeout=self.timeout,
                 )
                 if response.status_code >= 500 and attempt < self.max_retries:
@@ -242,13 +273,16 @@ class EtherscanClient:
                 if attempt < self.max_retries:
                     time.sleep(self.backoff_seconds * attempt)
                 else:
-                    raise
+                    raise self._safe_request_error(url, exc) from None
             except ValueError as exc:
                 last_error = exc
                 if attempt < self.max_retries:
                     time.sleep(self.backoff_seconds * attempt)
                 else:
-                    raise ValueError("Failed to parse response from Etherscan.") from exc
+                    label = self.indexer_name() if url == self.api_url() else "etherscan"
+                    raise ValueError(
+                        f"Failed to parse response from {label.capitalize()}."
+                    ) from exc
 
         if last_error:
             raise last_error

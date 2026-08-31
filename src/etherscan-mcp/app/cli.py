@@ -425,7 +425,7 @@ def _build_parser() -> argparse.ArgumentParser:
     resolve_parser = subparsers.add_parser(
         "resolve-chain",
         help="Resolve a network string to chainid",
-        description="Resolve a network name/alias to chainid via local presets and chainlist. Returns rpc_configured plus per-tool caveats.",
+        description="Resolve a network name/alias to chainid via local presets and chainlist. Returns rpc_available/rpc_source/rpc_configured plus per-tool caveats.",
     )
     resolve_parser.add_argument("--network", required=True, help="Network name/alias or numeric chainid.")
     resolve_parser.set_defaults(run=lambda svc, a: svc.resolve_chain(a.network))

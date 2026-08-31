@@ -86,7 +86,7 @@ RPC_URL_4663=https://<provider-endpoint> python -m app call-function-series \
   --from-block 100000 --to-block 110000 --stride 100
 ```
 
-内置公共 RPC 有速率限制，且不承诺 archive 能力；`call_function_series` 或指定历史 `block_tag` 时仍应设置 `RPC_URL_4663` / `RPC_URL_46630` 为 archive endpoint。主网 Blockscout 偶尔会对非浏览器客户端返回 Cloudflare challenge；可重试或用 `EXPLORER_API_URL_4663` 覆盖为可直连的兼容索引端点。Robinhood Chain 与 Robinhood 券商 / crypto account API 相互独立，本仓不访问账户、不下单。
+内置公共 RPC 有速率限制，且不承诺 archive 能力；`resolve-chain` 会返回 `rpc_available=true`、`rpc_source=builtin`、`rpc_configured=false`，历史 state caveat 不会被误标成 `ok`。`call_function_series` 或指定历史 `block_tag` 时仍应设置 `RPC_URL_4663` / `RPC_URL_46630` 为 archive endpoint。主网 Blockscout 偶尔会对非浏览器客户端返回 Cloudflare challenge；可重试或用 `EXPLORER_API_URL_4663` 覆盖为可直连的兼容索引端点。Robinhood Chain 与 Robinhood 券商 / crypto account API 相互独立，本仓不访问账户、不下单。
 
 ## MCP（能力保留，本机注册已退役）
 
@@ -119,7 +119,7 @@ python -m app.mcp_server --transport streamable-http --host 127.0.0.1 --port 870
 - `config.py` —— 读取环境变量，封装为配置对象；保留少量静态 `NETWORK_CHAIN_ID_MAP`（mainnet/bsc/sepolia 等）作为 chainlist 不可用时的兜底。
 - `network_presets.py` —— Etherscan chainlist 之外的内置链元数据；当前包含 Robinhood 主网 / 测试网的 alias、Blockscout 与公共 RPC。
 - `chains.py` —— Etherscan V2 `/v2/chainlist` + 本地 preset 的链清单模块，进程内 TTL 缓存；提供 `list_chains()` 与 `resolve(network)`（支持数字 chainid、链名模糊、别名 `arb`/`bsc`/`base`/`robinhood`）。
-- `capabilities.py` —— 手维护的 per-chain caveat 矩阵（`chainid → [{tool, status, reason, workaround}]`），把 README「已知限制」结构化暴露出来。`status` 枚举：`requires_rpc_url` / `paid_tier_only` / `degraded` / `unsupported`；service 层在输出时会附 `status_effective`，`requires_rpc_url` 在配了 `RPC_URL_<chainid>` 时降级为 `ok`。
+- `capabilities.py` —— 手维护的 per-chain caveat 矩阵（`chainid → [{tool, status, reason, workaround}]`），把 README「已知限制」结构化暴露出来。`status` 枚举：`requires_rpc_url` / `paid_tier_only` / `degraded` / `unsupported`；service 层在输出时会附 `status_effective`，用户显式配置 `RPC_URL_<chainid>` 后可缓解的条目降级为 `ok`，内置公共 RPC 不算显式配置。
 - `etherscan_client.py` —— requests 封装的 Etherscan-compatible REST client，支持按 chainid 路由 Etherscan / Blockscout；对源码 / 创建信息 / 交易 / 转移 / 日志 / `module=proxy` 做有限重试与退避，识别限流文案（`rate limit` / `Max calls per sec` / `Too Many Requests`）。
 - `rpc_client.py` —— JSON-RPC（HTTP POST）封装；`eth_call` / `eth_getStorageAt` / `eth_getLogs` / `eth_getBlockByNumber` / `eth_getTransactionByHash` / `eth_getTransactionReceipt` / `eth_blockNumber` 等只读调用。
 - `cache.py` —— 纯内存缓存（进程级，不落盘），按 address+chainid 键控；contract 详情与 creation 用不同命名空间。
@@ -161,12 +161,13 @@ python -m app.mcp_server --transport streamable-http --host 127.0.0.1 --port 870
 
 ## 已知限制
 
-> 这些限制结构化进了 `capabilities.py`，跑任务前调一次 `resolve_chain --network <chain>` 就能拿到当前链的 `caveats` + `rpc_configured`；`list_chains` 输出带 `has_caveats` 标记。不必再二手转述这一节。
+> 这些限制结构化进了 `capabilities.py`，跑任务前调一次 `resolve_chain --network <chain>` 就能拿到当前链的 `caveats` + `rpc_available` / `rpc_source` / `rpc_configured`；`list_chains` 输出带 `has_caveats` 标记。不必再二手转述这一节。
 
 - **`list_transactions` / `list_token_transfers` 在部分 free tier 链上返回空**：对应 Etherscan 的 `txlist` / `tokentx` indexed 端点，原生 JSON-RPC 没有等价能力（`eth_*` 只能按 hash/block 拿，没法按 address 倒查历史）。Base 等链 free tier 直接返回空，目前没有 fallback。后续如有需要要走 BaseScan native key 或第三方索引服务（Covalent / Alchemy enhanced API），单独立项。`status=paid_tier_only`。
 - **`get_contract_creation` 在 BSC 等链可能 NOTOK**：建议配 `RPC_URL_<chainid>` 启用 RPC 二分回退；internal create 场景可能仅返回 `block_number/timestamp`（`complete=false`），且需要 archive / full-history 节点。`status=degraded`。
 - **`module=proxy` 在 Base / BSC 等链 free tier 受限**：会报 `Free API access is not supported for this chain`，配 `RPC_URL_<chainid>` 绕开。`status=requires_rpc_url`，配上 RPC 后 `status_effective` 自动降级为 `ok`。
 - **Robinhood 主网 Blockscout 偶发 Cloudflare challenge**：RPC 类工具仍可用；`fetch_contract` / `get_source_file` / `get_contract_creation` / `list_transactions` / `list_token_transfers` 可能收到 HTML challenge。重试，或用 `EXPLORER_API_URL_4663` 指向可直连的 Etherscan-compatible / Blockscout indexer。`status=degraded`。
+- **Robinhood 内置公共 RPC 是 degraded 路径**：主网 / 测试网都只适合低频 latest-state 读取，生产、批量或历史 state 要显式配置 provider/archive endpoint；此时 `rpc_source=env`、`rpc_configured=true`，可缓解的 caveat 才会变成 `status_effective=ok`。
 - **`call_function` / `call_function_series` / `get_storage_at` 历史 state 全链不支持（chain-agnostic）**：Etherscan `module=proxy` 对非 `latest|earliest|pending` 的 block_tag **静默忽略**，永远返回 latest state（debug 起来很坑），所有链都一样。当前代码当 RPC 未配且要读历史 state 时**显式报错**（不再静默 fallback）。修复方式：配 archive 节点的 `RPC_URL_<chainid>`，**普通 full node 不够要 archive**（Alchemy / Quicknode / drpc / Ankr / 自建 erigon）。`status=requires_rpc_url`，登记在 `GLOBAL_CAVEATS`，全链生效。`status_effective` 在 `RPC_URL_<chainid>` 配上后会降级为 `ok`，但 archive vs full node 没法从 URL 自动检测，**配错节点会运行时报"historical state not available"**。
 - **新链 / 未列入 caveat 矩阵的链**（HyperEVM、Plasma 等）：默认按"无 caveat"处理。先用 `list_chains` 确认 Etherscan V2 是否覆盖（status=1 为正常），跑任务踩坑后回头补 `capabilities.py`。
 
@@ -180,10 +181,10 @@ python -m app.mcp_server --transport streamable-http --host 127.0.0.1 --port 870
 | `CHAIN_ID` | — | 硬覆盖 network 推导出的 chainid |
 | `ETHERSCAN_CHAINLIST_URL` | `https://api.etherscan.io/v2/chainlist` | 链清单端点 |
 | `CHAINLIST_TTL_SECONDS` | `3600` | 链清单缓存 TTL |
-| `RPC_URL_<chainid>` | Robinhood 两条链有内置公共端点，其余 — | 指定链的 JSON-RPC HTTP 端点。BSC/Base 等绕 free-tier proxy 限制配普通 full node 即可；`call_function` / `call_function_series` / `get_storage_at` 走历史 state 必须配 **archive 节点**（Alchemy / Quicknode / drpc / Ankr / 自建 erigon）。常用 chain：`RPC_URL_1` (mainnet)、`RPC_URL_42161` (arbitrum)、`RPC_URL_8453` (base)、`RPC_URL_56` (bsc)、`RPC_URL_4663` (Robinhood)、`RPC_URL_46630` (Robinhood testnet) |
+| `RPC_URL_<chainid>` | Robinhood 两条链有内置公共端点，其余 — | 指定链的 JSON-RPC HTTP 端点。BSC/Base 等绕 free-tier proxy 限制配普通 full node 即可；`call_function` / `call_function_series` / `get_storage_at` 走历史 state 必须配 **archive 节点**（Alchemy / Quicknode / drpc / Ankr / 自建 erigon）。常用 chain：`RPC_URL_1` (mainnet)、`RPC_URL_42161` (arbitrum)、`RPC_URL_8453` (base)、`RPC_URL_56` (bsc)、`RPC_URL_4663` (Robinhood)、`RPC_URL_46630` (Robinhood testnet)。对 Robinhood 显式设空值可禁用内置 RPC。 |
 | `RPC_<chainid>` | — | `RPC_URL_<chainid>` 的兼容别名 |
 | `RPC_URL` | — | 默认链的 JSON-RPC 端点（仅未显式传 `network` 时生效；显式传 `network` 推荐用 `RPC_URL_<chainid>` 避免误绑定） |
-| `EXPLORER_API_URL_<chainid>` | Robinhood 两条链有内置 Blockscout，其余 — | 覆盖指定链的 Etherscan-compatible explorer API；例如 `EXPLORER_API_URL_4663`。URL 可带 `/api`，末尾 `/` 会规范化。 |
+| `EXPLORER_API_URL_<chainid>` | Robinhood 两条链有内置 Blockscout，其余 — | 覆盖指定链的 Etherscan-compatible explorer API；例如 `EXPLORER_API_URL_4663`。URL 必须包含 API path（Blockscout 通常为 `/api`），末尾 `/` 会规范化；显式设空值可禁用内置 indexer。`ETHERSCAN_API_KEY` 不会发往该端点。 |
 | `REQUEST_TIMEOUT` | `10` | 单次请求超时（秒） |
 | `REQUEST_RETRIES` | `3` | 重试次数 |
 | `REQUEST_BACKOFF_SECONDS` | `0.5` | 退避基数 |
