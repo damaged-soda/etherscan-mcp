@@ -5,6 +5,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from .network_presets import NETWORK_PRESETS
+
 _WORD_RE = re.compile(r"[a-z0-9]+")
 _SPACE_RE = re.compile(r"[\s_\-]+")
 
@@ -41,7 +43,7 @@ class ChainInfo:
 
 class ChainRegistry:
     """
-    Dynamic chain registry backed by Etherscan V2 /v2/chainlist.
+    Dynamic chain registry backed by Etherscan V2 /v2/chainlist plus local presets.
     - Caches list in-memory with TTL.
     - Resolves network input by chainid or (fuzzy) chainname/slug/aliases.
     """
@@ -75,6 +77,19 @@ class ChainRegistry:
             "arb-sepolia": "arbitrum sepolia",
             "arbitrum sepolia": "arbitrum sepolia",
         }
+        for chainid, preset in NETWORK_PRESETS.items():
+            info = ChainInfo(
+                chainname=str(preset["chainname"]),
+                chainid=chainid,
+                blockexplorer=str(preset.get("blockexplorer", "")),
+                apiurl=str(preset.get("apiurl", "")),
+                status=int(preset.get("status", 1)),
+                comment=str(preset.get("comment", "")),
+            )
+            self._chains[chainid] = info
+            for alias in preset.get("aliases", ()):
+                self._alias[_norm(str(alias))] = chainid
+        self._rebuild_index()
 
     def _expired(self) -> bool:
         return (time.time() - self._loaded_at) > self._ttl or not self._chains
@@ -94,7 +109,13 @@ class ChainRegistry:
         if not isinstance(result, list):
             raise ValueError("Unexpected chainlist response (missing result list).")
 
-        chains: Dict[str, ChainInfo] = {}
+        # Preserve locally supported explorer presets even when Etherscan does
+        # not list the chain. Remote metadata wins if Etherscan adds it later.
+        chains: Dict[str, ChainInfo] = {
+            chainid: info
+            for chainid, info in self._chains.items()
+            if chainid in NETWORK_PRESETS
+        }
         for item in result:
             if not isinstance(item, dict):
                 continue
@@ -183,10 +204,15 @@ class ChainRegistry:
                 return info.canonical_label, info.chainid, self._meta(info, matched_by="chainid")
             return raw, raw, self._meta(None, matched_by="chainid")
 
-        self.refresh()
-
         q = _norm(raw)
         q = _norm(self._alias.get(q, q))
+
+        # Built-in presets must resolve even when Etherscan chainlist is down.
+        exact = self._index.get(q)
+        if exact:
+            return self._pick_or_raise(q, exact, matched_by="exact")
+
+        self.refresh()
 
         exact = self._index.get(q)
         if exact:

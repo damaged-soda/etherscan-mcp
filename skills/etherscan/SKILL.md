@@ -9,11 +9,11 @@ user-invocable: true
 allowed-tools: Bash(etherscan:*)
 ---
 
-# Etherscan / EVM 链上数据 CLI
+# Explorer / EVM 链上数据 CLI
 
-使用 `etherscan` CLI(personal 域)查询 Etherscan API V2 与 EVM JSON-RPC 只读
-数据。凭据由 wrapper 从 0600 文件注入,不要把 API key 写进命令行、URL 或文件。
-只读:不签名、不广播交易。
+使用 `etherscan` CLI(personal 域)查询 Etherscan API V2、Etherscan-compatible
+Blockscout 与 EVM JSON-RPC 只读数据。凭据由 wrapper 从 0600 文件注入,不要把
+API key 写进命令行、URL 或文件。只读:不签名、不广播交易。
 
 ## CLI 摘要
 
@@ -62,6 +62,11 @@ etherscan get-transaction-summary --tx-hash 0x... --compact
 # 其他链:--network 收链名或 chainid;先 resolve-chain 看 free-tier 限制
 etherscan resolve-chain --network base
 etherscan fetch --address 0x... --network 8453
+
+# Robinhood Chain:主网 4663 / 测试网 46630 均有内置公共 RPC + Blockscout
+etherscan resolve-chain --network robinhood
+etherscan get-block --network robinhood --block latest --tx-hashes-only
+etherscan fetch --network robinhood-testnet --address 0x...
 ```
 
 ## 注意
@@ -69,5 +74,9 @@ etherscan fetch --address 0x... --network 8453
 - 数组参数(`--args`、`--topics`)必须是 JSON 数组字符串;topic 通配位用 `null`。
 - Base/BSC 等链的 `list-transactions`/`list-token-transfers` 在 Etherscan free
   tier 返回空,`resolve-chain` 的 caveats 会提示;改用日志或 RPC 侧能力。
+- Robinhood 可用 `robinhood` / `robinhood-testnet` 别名。内置公共 RPC 只适合
+  低频 latest-state 查询;批量或历史 state 要覆盖 `RPC_URL_4663` /
+  `RPC_URL_46630` 为 provider/archive endpoint。主网 Blockscout 若返回
+  Cloudflare challenge,按 caveat 重试或覆盖 `EXPLORER_API_URL_4663`。
 - `call-function-series` 需要该链 `RPC_URL_<chainid>` 指向 archive 节点。
 - 内核与参数语义详见 `~/work/personal/etherscan-mcp/README.md`。

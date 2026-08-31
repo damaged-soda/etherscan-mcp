@@ -81,6 +81,24 @@ GLOBAL_CAVEATS: List[Dict[str, str]] = [
 
 
 CHAIN_CAVEATS: Dict[str, List[Dict[str, str]]] = {
+    # Robinhood Chain mainnet. The public RPC path works, but the official
+    # Blockscout API may present an HTML Cloudflare challenge to non-browser
+    # clients. Testnet currently exposes the same API without that challenge.
+    "4663": [
+        {
+            "tool": tool,
+            "status": STATUS_DEGRADED,
+            "reason": "Robinhood 主网官方 Blockscout API 可能对非浏览器客户端返回 Cloudflare challenge；RPC 读链不受影响。",
+            "workaround": "重试，或用 `EXPLORER_API_URL_4663` 指向可直连的 Etherscan-compatible / Blockscout 索引端点。",
+        }
+        for tool in (
+            "fetch_contract",
+            "get_source_file",
+            "get_contract_creation",
+            "list_transactions",
+            "list_token_transfers",
+        )
+    ],
     # BSC
     "56": [
         {

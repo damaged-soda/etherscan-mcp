@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Optional
 
+from .network_presets import default_explorer_api_urls, default_rpc_urls, preset_aliases
+
 DEFAULT_BASE_URL = "https://api.etherscan.io/v2/api"
 DEFAULT_CHAINLIST_URL = "https://api.etherscan.io/v2/chainlist"
 
@@ -15,9 +17,11 @@ NETWORK_CHAIN_ID_MAP = {
     "bsc": "56",
     "sepolia": "11155111",
     "holesky": "17000",
+    **preset_aliases(),
 }
 
 _RPC_URL_ENV_RE = re.compile(r"^(RPC_URL|RPC)_(\d+)$")
+_EXPLORER_API_URL_ENV_RE = re.compile(r"^EXPLORER_API_URL_(\d+)$")
 
 
 @dataclass
@@ -32,8 +36,9 @@ class Config:
     max_retries: int = 3
     backoff_seconds: float = 0.5
     chainlist_ttl_seconds: int = 3600
-    rpc_urls: Dict[str, str] = field(default_factory=dict)
+    rpc_urls: Dict[str, str] = field(default_factory=default_rpc_urls)
     rpc_url_default: Optional[str] = None
+    explorer_api_urls: Dict[str, str] = field(default_factory=default_explorer_api_urls)
     # Disk cache directory for stable per-(chain, address) lookups (token
     # symbol/decimals/name, contract names). Empty string disables persistence
     # entirely. Absent / None falls back to ~/.cache/etherscan-mcp.
@@ -62,7 +67,7 @@ def resolve_chain_id(network: str, override_chain_id: Optional[str] = None) -> s
 
 def _load_rpc_urls_from_env() -> Dict[str, str]:
     """Load chainid -> RPC URL mapping from environment variables."""
-    rpc_urls: Dict[str, str] = {}
+    rpc_urls = default_rpc_urls()
     for key, value in os.environ.items():
         match = _RPC_URL_ENV_RE.match(key)
         if not match:
@@ -72,6 +77,20 @@ def _load_rpc_urls_from_env() -> Dict[str, str]:
         if url:
             rpc_urls[chain_id] = url
     return rpc_urls
+
+
+def _load_explorer_api_urls_from_env() -> Dict[str, str]:
+    """Load chainid -> Etherscan-compatible explorer API URL mapping."""
+    api_urls = default_explorer_api_urls()
+    for key, value in os.environ.items():
+        match = _EXPLORER_API_URL_ENV_RE.match(key)
+        if not match:
+            continue
+        chain_id = match.group(1)
+        url = (value or "").strip().rstrip("/")
+        if url:
+            api_urls[chain_id] = url
+    return api_urls
 
 
 def load_config() -> Config:
@@ -91,6 +110,7 @@ def load_config() -> Config:
     rpc_urls = _load_rpc_urls_from_env()
     rpc_url_default = os.getenv("RPC_URL")
     rpc_url_default = rpc_url_default.strip() if rpc_url_default else None
+    explorer_api_urls = _load_explorer_api_urls_from_env()
 
     cache_dir_env = os.getenv("ETHERSCAN_MCP_CACHE_DIR")
     if cache_dir_env is None:
@@ -127,6 +147,7 @@ def load_config() -> Config:
         chainlist_ttl_seconds=ttl,
         rpc_urls=rpc_urls,
         rpc_url_default=rpc_url_default,
+        explorer_api_urls=explorer_api_urls,
         cache_dir=cache_dir,
         metadata_fetch_concurrency=metadata_concurrency,
     )

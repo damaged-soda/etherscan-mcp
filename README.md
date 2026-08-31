@@ -1,16 +1,16 @@
 # Etherscan MCP
 
-CLI + stdio MCP server，封装 Etherscan API V2（ABI / 源码 / 索引类查询）+ EVM JSON-RPC（`eth_call` / `eth_getStorageAt` / `eth_getLogs` / 区块 / 交易等只读调用），用于合约研判和链上数据抓取。不签名、不广播链上交易。
+CLI + stdio MCP server，封装 Etherscan API V2 / Etherscan-compatible Blockscout（ABI / 源码 / 索引类查询）+ EVM JSON-RPC（`eth_call` / `eth_getStorageAt` / `eth_getLogs` / 区块 / 交易等只读调用），用于合约研判和链上数据抓取。不签名、不广播链上交易。
 
 ## 功能概览
 
 - **合约详情**：ABI、源码、编译器版本、验证状态。
-- **创建信息**：创建者、创建交易哈希、块高（Etherscan 优先，失败可回退 RPC 二分定位）。
+- **创建信息**：创建者、创建交易哈希、块高（explorer indexer 优先，失败可回退 RPC 二分定位）。
 - **代理检测**：读取 EIP-1967 implementation/admin 槽，输出实现地址与证据。
 - **交互数据**：普通交易列表、ERC20/721/1155 代币转移列表、日志按 topic 查询。
 - **状态读取**：任意存储槽读取（`eth_getStorageAt`）、只读函数调用（`eth_call`，支持本地 ABI 编码 + 返回值解码）。
 - **区块 / 交易**：`eth_getBlockByNumber`、`eth_getTransactionByHash` + receipt。
-- **链清单**：基于 Etherscan V2 `/v2/chainlist` 动态拉取，支持别名（`bsc` / `base` / `arb` 等）。
+- **链清单**：基于 Etherscan V2 `/v2/chainlist` 动态拉取并合并本地 explorer preset，支持别名（`bsc` / `base` / `arb` / `robinhood` 等）。
 - **缓存**：纯内存（进程级），合约详情与创建信息缓存；动态列表 / 日志 / 存储 / `eth_call` 默认不缓存。
 
 ## 环境要求
@@ -42,7 +42,7 @@ python -m app list-transactions --address <addr> [--start-block N --end-block M 
 python -m app list-token-transfers --address <addr> [--token-type erc20|erc721|erc1155] [分页参数同上]
 python -m app query-logs --address <contract> --topics '["0x..."]' [--from-block N --to-block latest --page P --offset O]
 
-# 链上状态（需 RPC_URL / RPC_URL_<chainid>）
+# 链上状态（通常需 RPC_URL / RPC_URL_<chainid>；Robinhood 内置限速公共 RPC）
 python -m app get-storage-at --address <contract> --slot <slot> [--block-tag latest|N|0x..]
 python -m app call-function --address <contract> --function 'balanceOf(address)' --args '["0x..."]' [--decimals 6]
 python -m app call-function-series --address <contract> --function 'totalSupply()' --from-block N --to-block M --stride K
@@ -62,6 +62,31 @@ python -m app resolve-chain --network <name|alias|chainid>
 ```
 
 源码超内联阈值（默认 20000 字符）且未强制时，`source_files` 仅返回摘要（filename/length/sha256/inline=false）并附 `source_omitted`/`source_omitted_reason`，需要原文用 `get-source-file` 分段拿。
+
+## Robinhood Chain
+
+Robinhood Chain 不在 Etherscan V2 chainlist 中，本仓用本地 preset 补齐主网和测试网，并把索引类请求路由到官方 Blockscout：
+
+| 网络 | 别名 | chainid | 默认只读 RPC | explorer indexer |
+|------|------|---------|----------------|------------------|
+| Robinhood Chain | `robinhood` / `rh` | `4663` | `https://rpc.mainnet.chain.robinhood.com` | `https://robinhoodchain.blockscout.com/api` |
+| Robinhood Chain Testnet | `robinhood-testnet` / `rh-testnet` | `46630` | `https://rpc.testnet.chain.robinhood.com` | `https://explorer.testnet.chain.robinhood.com/api` |
+
+```bash
+# 无需额外 RPC 配置即可读取最新区块 / tx / logs / latest state
+python -m app get-block --network robinhood --block latest --tx-hashes-only
+
+# ABI / 源码 / 地址交易与 token transfer 走官方 Blockscout
+python -m app fetch --network robinhood-testnet --address 0x...
+python -m app list-transactions --network robinhood --address 0x...
+
+# 生产、批量或历史 state 查询请覆盖为 provider / archive endpoint
+RPC_URL_4663=https://<provider-endpoint> python -m app call-function-series \
+  --network robinhood --address 0x... --function 'totalSupply()' \
+  --from-block 100000 --to-block 110000 --stride 100
+```
+
+内置公共 RPC 有速率限制，且不承诺 archive 能力；`call_function_series` 或指定历史 `block_tag` 时仍应设置 `RPC_URL_4663` / `RPC_URL_46630` 为 archive endpoint。主网 Blockscout 偶尔会对非浏览器客户端返回 Cloudflare challenge；可重试或用 `EXPLORER_API_URL_4663` 覆盖为可直连的兼容索引端点。Robinhood Chain 与 Robinhood 券商 / crypto account API 相互独立，本仓不访问账户、不下单。
 
 ## MCP（能力保留，本机注册已退役）
 
@@ -92,9 +117,10 @@ python -m app.mcp_server --transport streamable-http --host 127.0.0.1 --port 870
 入口目录 `src/etherscan-mcp/app/`：
 
 - `config.py` —— 读取环境变量，封装为配置对象；保留少量静态 `NETWORK_CHAIN_ID_MAP`（mainnet/bsc/sepolia 等）作为 chainlist 不可用时的兜底。
-- `chains.py` —— 基于 Etherscan V2 `/v2/chainlist` 的链清单模块，进程内 TTL 缓存；提供 `list_chains()` 与 `resolve(network)`（支持数字 chainid、链名模糊、别名 `arb`/`bsc`/`base`）。
+- `network_presets.py` —— Etherscan chainlist 之外的内置链元数据；当前包含 Robinhood 主网 / 测试网的 alias、Blockscout 与公共 RPC。
+- `chains.py` —— Etherscan V2 `/v2/chainlist` + 本地 preset 的链清单模块，进程内 TTL 缓存；提供 `list_chains()` 与 `resolve(network)`（支持数字 chainid、链名模糊、别名 `arb`/`bsc`/`base`/`robinhood`）。
 - `capabilities.py` —— 手维护的 per-chain caveat 矩阵（`chainid → [{tool, status, reason, workaround}]`），把 README「已知限制」结构化暴露出来。`status` 枚举：`requires_rpc_url` / `paid_tier_only` / `degraded` / `unsupported`；service 层在输出时会附 `status_effective`，`requires_rpc_url` 在配了 `RPC_URL_<chainid>` 时降级为 `ok`。
-- `etherscan_client.py` —— requests 封装的 REST client，对源码 / 创建信息 / 交易 / 转移 / 日志 / `module=proxy` 做有限重试与退避，识别限流文案（`rate limit` / `Max calls per sec` / `Too Many Requests`）。
+- `etherscan_client.py` —— requests 封装的 Etherscan-compatible REST client，支持按 chainid 路由 Etherscan / Blockscout；对源码 / 创建信息 / 交易 / 转移 / 日志 / `module=proxy` 做有限重试与退避，识别限流文案（`rate limit` / `Max calls per sec` / `Too Many Requests`）。
 - `rpc_client.py` —— JSON-RPC（HTTP POST）封装；`eth_call` / `eth_getStorageAt` / `eth_getLogs` / `eth_getBlockByNumber` / `eth_getTransactionByHash` / `eth_getTransactionReceipt` / `eth_blockNumber` 等只读调用。
 - `cache.py` —— 纯内存缓存（进程级，不落盘），按 address+chainid 键控；contract 详情与 creation 用不同命名空间。
 - `service.py` —— 聚合层：地址校验、network/chainid 解析、ABI 解析、读链路由（已配 RPC 走 RPC，未配走 `module=proxy`）、call_function 编码 / 解码、convert helper。
@@ -116,17 +142,17 @@ python -m app.mcp_server --transport streamable-http --host 127.0.0.1 --port 870
 
 容易踩坑的几条：
 
-- **`network` 入参**：支持数字 chainid（`"42161"`，最稳定）、官方链名 / 模糊匹配、轻量别名（`arb`、`arb-sepolia`、`bsc`→`56`、`base`→`8453`）。歧义时强制要求 chainid。
+- **`network` 入参**：支持数字 chainid（`"42161"`，最稳定）、官方链名 / 模糊匹配、轻量别名（`arb`、`arb-sepolia`、`bsc`→`56`、`base`→`8453`、`robinhood`→`4663`、`robinhood-testnet`→`46630`）。歧义时强制要求 chainid。
 - **默认网络安全**：未显式传 `network` 且默认 `NETWORK` 无法解析、`CHAIN_ID` 也未设置时，service 直接报错，避免误用主网。
 - **数组形态参数**：`call_function.args` / `call_function_series.args` / `encode_function_data.args` / `query_logs.topics` 必须是数组。MCP 入口层会把标量自动包成单元素数组；字符串 / bytes / 对象会直接报错并提示示例，避免被逐字符拆分。
 - **块号输入兼容**：`start_block` / `end_block` / `from_block` / `to_block` 接受整数、十进制字符串、`0x` 十六进制字符串。非法输入报错提示"十进制或 0x 前缀"。
 - **未验证合约**：`getsourcecode` 返回典型未验证文案（如 `Contract source code not verified`）时，明确报错"合约未验证导致 ABI 不可用"，附 address/network/chain_id 与截断摘要。
 - **`call_function`**：基础校验 0x / 偶数字节 / 至少 4 字节 selector；ABI 命中时按 outputs 解码（含 tuple / 数组），数值类支持 `decimals` hint 计算 `value_scaled`；ABI 加载但 selector 缺失时软失败放行 raw `eth_call`，`decoded.warning` 提示；无参函数可省略括号（`readTokens` 等价 `readTokens()`）。
 - **`call_function_series`**：对同一个 `data` 或 `function+args` 从 `from_block` 开始、按 `stride` 递增采样，直到下一个点会超过 `to_block` 为止；例如 `from_block=10,to_block=15,stride=3` 采样 `10,13`，不会强制补尾块 `15`。返回 `series[] = {block_number, block_tag, data, decoded}`。只走 JSON-RPC batch，不回退 Etherscan；必须配置对应链的 archive `RPC_URL_<chainid>`。`batch_size` 默认 25，用来控制单次 JSON-RPC batch 大小；单次最多 10000 个采样点，超出要加大 `stride` 或缩小 block range。
-- **代理感知**：`fetch_contract` 解析 Etherscan Proxy/Implementation 元数据，规范化实现地址写入 proxy cache；`call_function` ABI 选择优先实现合约（来自元数据或 EIP-1967 detect_proxy）；探测异常不缓存"非代理"，避免假阴性；缺实现 ABI 不阻断调用，仅解码受限。
+- **代理感知**：`fetch_contract` 解析 explorer indexer 的 Proxy/Implementation 元数据，规范化实现地址写入 proxy cache；`call_function` ABI 选择优先实现合约（来自元数据或 EIP-1967 detect_proxy）；探测异常不缓存"非代理"，避免假阴性；缺实现 ABI 不阻断调用，仅解码受限。
 - **`convert`**：`from_unit` / `to_unit` 支持 `hex` / `dec` / `human` / `wei` / `gwei` / `eth`，`decimals` 默认 18；内部用整数 / Decimal 避免浮点丢精度；分数精度超限会报错。
 - **`get_transaction`**：优先 RPC 的 `eth_getTransactionByHash` + `eth_getTransactionReceipt`，未配 RPC 回退 Etherscan proxy；`tx_hash` 需 `0x` + 64 hex。
-- **`get_transaction_summary`**：一次性给出 tx meta + gas cost + 唯一 log address 列表（带 Etherscan `ContractName` 注解）+ ERC20 `Transfer` 解码（`topic0=0xddf252ad...`，3 topics 严格匹配，自动跳 ERC721 4-topic 变体），并 best-effort 拉每个 token 的 `symbol/decimals/name`（标准 selector + 兼容 `bytes32` symbol/name 的旧式 ERC20 如 MKR）。`decode_transfers` / `annotate_contracts` 默认 `true`，关掉跳过对应 lookup。注解 + token metadata 走线程池并发拉取（`METADATA_FETCH_CONCURRENCY` 默认 5），并落 `ETHERSCAN_MCP_CACHE_DIR` 持久化，进程重启不重拉；瞬时 RPC 失败（节点限速 / 暂时不可用）不写 cache，下次自动重试，仅对真正解码失败的字段（合约不实现 ERC20 接口等）才缓存为 `None`。**协议特异识别（"这是 Pendle market / PT / YT"）默认不做**，靠 Etherscan ContractName + 调用方在 pendle-mcp 等下游做交叉。
+- **`get_transaction_summary`**：一次性给出 tx meta + gas cost + 唯一 log address 列表（带 explorer `ContractName` 注解）+ ERC20 `Transfer` 解码（`topic0=0xddf252ad...`，3 topics 严格匹配，自动跳 ERC721 4-topic 变体），并 best-effort 拉每个 token 的 `symbol/decimals/name`（标准 selector + 兼容 `bytes32` symbol/name 的旧式 ERC20 如 MKR）。`decode_transfers` / `annotate_contracts` 默认 `true`，关掉跳过对应 lookup。注解 + token metadata 走线程池并发拉取（`METADATA_FETCH_CONCURRENCY` 默认 5），并落 `ETHERSCAN_MCP_CACHE_DIR` 持久化，进程重启不重拉；瞬时 RPC 失败（节点限速 / 暂时不可用）不写 cache，下次自动重试，仅对真正解码失败的字段（合约不实现 ERC20 接口等）才缓存为 `None`。**协议特异识别（"这是 Pendle market / PT / YT"）默认不做**，靠 explorer ContractName + 调用方在 pendle-mcp 等下游做交叉。
 - **`get_transaction_summary` `compact=true`**：跨协议套利结构视图。回答"这笔 tx 是什么结构、资金净流向是什么、成本多少"，而不是"完整日志是什么"。返回 `gas`（嵌套 `execution_fee` / `l1_fee` / `total_fee`，OP stack 链直接读 receipt `l1Fee` / `l1GasUsed` / `l1GasPrice`；非 OP stack `l1_fee_*` 为 `null`）+ `protocols` / `contracts` / `tokens` / `net_token_flow_by_address`（按 `(address, token)` 聚合的有符号 ERC20 净额，跳 0 项）+ 启发式 `route_hints`（关键词匹配 `PendleRouter` / `PendleMarket` / `MetaAggregationRouter` / `Kyber` / `AggregationRouterV` / `UniswapV3` / `CLPool`，token symbol 前缀 `PT-` / `YT-` / `SY-`；规则在 `app/capabilities.py:ROUTE_HINT_RULES`）+ `counts`。**`route_hints` 是启发式标签，调研要交叉验证**，不要拿来当结论。compact 模式不返回逐条 `erc20_transfers`；要原始列表请用默认模式（`compact=false`）。
 - **`get_transaction_summary` `flow_scope`**（compact 模式专用）：控制 `net_token_flow_by_address` 过滤粒度。`user`（默认）只保留 `tx.from` 净流，套利判断时一眼看用户最终拿了什么 / 丢了什么；`user_router` 额外保留 `tx.to`（router 自己截留 fee 的场景）；`all` 保留全部行（pool / zero address mint+burn / aggregator 中间地址都在）。`tokens` / `contracts` / `protocols` / `route_hints` 不受影响 —— 它们描述 tx 结构，不是用户净额。`counts.flow_rows_total` / `counts.flow_rows_after_scope` 暴露过滤前后行数。
 - **`query_logs`（RPC 路径）**：`page/offset` 用"按 block range 分段累积后切片"的 best-effort 实现；RPC log 不含 `timeStamp`，`time_stamp` 字段为 `null`。
@@ -140,6 +166,7 @@ python -m app.mcp_server --transport streamable-http --host 127.0.0.1 --port 870
 - **`list_transactions` / `list_token_transfers` 在部分 free tier 链上返回空**：对应 Etherscan 的 `txlist` / `tokentx` indexed 端点，原生 JSON-RPC 没有等价能力（`eth_*` 只能按 hash/block 拿，没法按 address 倒查历史）。Base 等链 free tier 直接返回空，目前没有 fallback。后续如有需要要走 BaseScan native key 或第三方索引服务（Covalent / Alchemy enhanced API），单独立项。`status=paid_tier_only`。
 - **`get_contract_creation` 在 BSC 等链可能 NOTOK**：建议配 `RPC_URL_<chainid>` 启用 RPC 二分回退；internal create 场景可能仅返回 `block_number/timestamp`（`complete=false`），且需要 archive / full-history 节点。`status=degraded`。
 - **`module=proxy` 在 Base / BSC 等链 free tier 受限**：会报 `Free API access is not supported for this chain`，配 `RPC_URL_<chainid>` 绕开。`status=requires_rpc_url`，配上 RPC 后 `status_effective` 自动降级为 `ok`。
+- **Robinhood 主网 Blockscout 偶发 Cloudflare challenge**：RPC 类工具仍可用；`fetch_contract` / `get_source_file` / `get_contract_creation` / `list_transactions` / `list_token_transfers` 可能收到 HTML challenge。重试，或用 `EXPLORER_API_URL_4663` 指向可直连的 Etherscan-compatible / Blockscout indexer。`status=degraded`。
 - **`call_function` / `call_function_series` / `get_storage_at` 历史 state 全链不支持（chain-agnostic）**：Etherscan `module=proxy` 对非 `latest|earliest|pending` 的 block_tag **静默忽略**，永远返回 latest state（debug 起来很坑），所有链都一样。当前代码当 RPC 未配且要读历史 state 时**显式报错**（不再静默 fallback）。修复方式：配 archive 节点的 `RPC_URL_<chainid>`，**普通 full node 不够要 archive**（Alchemy / Quicknode / drpc / Ankr / 自建 erigon）。`status=requires_rpc_url`，登记在 `GLOBAL_CAVEATS`，全链生效。`status_effective` 在 `RPC_URL_<chainid>` 配上后会降级为 `ok`，但 archive vs full node 没法从 URL 自动检测，**配错节点会运行时报"historical state not available"**。
 - **新链 / 未列入 caveat 矩阵的链**（HyperEVM、Plasma 等）：默认按"无 caveat"处理。先用 `list_chains` 确认 Etherscan V2 是否覆盖（status=1 为正常），跑任务踩坑后回头补 `capabilities.py`。
 
@@ -153,9 +180,10 @@ python -m app.mcp_server --transport streamable-http --host 127.0.0.1 --port 870
 | `CHAIN_ID` | — | 硬覆盖 network 推导出的 chainid |
 | `ETHERSCAN_CHAINLIST_URL` | `https://api.etherscan.io/v2/chainlist` | 链清单端点 |
 | `CHAINLIST_TTL_SECONDS` | `3600` | 链清单缓存 TTL |
-| `RPC_URL_<chainid>` | — | 指定链的 JSON-RPC HTTP 端点。BSC/Base 等绕 free-tier proxy 限制配普通 full node 即可；`call_function` / `call_function_series` / `get_storage_at` 走历史 state 必须配 **archive 节点**（Alchemy / Quicknode / drpc / Ankr / 自建 erigon）。常用 chain：`RPC_URL_1` (mainnet)、`RPC_URL_42161` (arbitrum)、`RPC_URL_8453` (base)、`RPC_URL_10` (optimism)、`RPC_URL_137` (polygon)、`RPC_URL_56` (bsc) |
+| `RPC_URL_<chainid>` | Robinhood 两条链有内置公共端点，其余 — | 指定链的 JSON-RPC HTTP 端点。BSC/Base 等绕 free-tier proxy 限制配普通 full node 即可；`call_function` / `call_function_series` / `get_storage_at` 走历史 state 必须配 **archive 节点**（Alchemy / Quicknode / drpc / Ankr / 自建 erigon）。常用 chain：`RPC_URL_1` (mainnet)、`RPC_URL_42161` (arbitrum)、`RPC_URL_8453` (base)、`RPC_URL_56` (bsc)、`RPC_URL_4663` (Robinhood)、`RPC_URL_46630` (Robinhood testnet) |
 | `RPC_<chainid>` | — | `RPC_URL_<chainid>` 的兼容别名 |
 | `RPC_URL` | — | 默认链的 JSON-RPC 端点（仅未显式传 `network` 时生效；显式传 `network` 推荐用 `RPC_URL_<chainid>` 避免误绑定） |
+| `EXPLORER_API_URL_<chainid>` | Robinhood 两条链有内置 Blockscout，其余 — | 覆盖指定链的 Etherscan-compatible explorer API；例如 `EXPLORER_API_URL_4663`。URL 可带 `/api`，末尾 `/` 会规范化。 |
 | `REQUEST_TIMEOUT` | `10` | 单次请求超时（秒） |
 | `REQUEST_RETRIES` | `3` | 重试次数 |
 | `REQUEST_BACKOFF_SECONDS` | `0.5` | 退避基数 |

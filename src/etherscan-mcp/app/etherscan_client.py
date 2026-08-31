@@ -1,11 +1,12 @@
 import time
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 import requests
 
 
 class EtherscanClient:
-    """Thin wrapper around Etherscan API with basic retry."""
+    """Thin wrapper around Etherscan-compatible explorer APIs with basic retry."""
 
     def __init__(
         self,
@@ -15,6 +16,7 @@ class EtherscanClient:
         timeout: int = 10,
         max_retries: int = 3,
         backoff_seconds: float = 0.5,
+        chain_api_urls: Optional[Dict[str, str]] = None,
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
@@ -22,6 +24,11 @@ class EtherscanClient:
         self.timeout = timeout
         self.max_retries = max_retries
         self.backoff_seconds = backoff_seconds
+        self.chain_api_urls = {
+            str(chain_id): str(url).rstrip("/")
+            for chain_id, url in (chain_api_urls or {}).items()
+            if str(url).strip()
+        }
         self.session = requests.Session()
         self.session.headers.update({"X-API-Key": api_key})
 
@@ -172,6 +179,15 @@ class EtherscanClient:
     def get_chainlist(self, chainlist_url: str) -> Dict[str, Any]:
         return self._request_url(chainlist_url, params={})
 
+    def api_url(self, chain_id: Optional[str] = None) -> str:
+        return self.chain_api_urls.get(str(chain_id or self.chain_id), self.base_url)
+
+    def indexer_name(self, chain_id: Optional[str] = None) -> str:
+        hostname = (urlparse(self.api_url(chain_id)).hostname or "").lower()
+        if "blockscout" in hostname or hostname.endswith("chain.robinhood.com"):
+            return "blockscout"
+        return "etherscan"
+
     def _is_rate_limit_payload(self, payload: Any) -> bool:
         if not isinstance(payload, dict):
             return False
@@ -240,40 +256,4 @@ class EtherscanClient:
         raise RuntimeError("Request failed without raising an exception.")
 
     def _request(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        merged = {**params, "apikey": self.api_key}
-        last_error: Optional[Exception] = None
-
-        for attempt in range(1, self.max_retries + 1):
-            try:
-                response = self.session.get(
-                    self.base_url,
-                    params=merged,
-                    timeout=self.timeout,
-                )
-                if response.status_code >= 500 and attempt < self.max_retries:
-                    time.sleep(self.backoff_seconds * attempt)
-                    continue
-
-                response.raise_for_status()
-                payload = response.json()
-                if self._is_rate_limit_payload(payload) and attempt < self.max_retries:
-                    time.sleep(self.backoff_seconds * attempt)
-                    continue
-                return payload
-            except requests.RequestException as exc:
-                last_error = exc
-                if attempt < self.max_retries:
-                    time.sleep(self.backoff_seconds * attempt)
-                else:
-                    raise
-            except ValueError as exc:
-                last_error = exc
-                if attempt < self.max_retries:
-                    time.sleep(self.backoff_seconds * attempt)
-                else:
-                    raise ValueError("Failed to parse response from Etherscan.") from exc
-
-        if last_error:
-            raise last_error
-
-        raise RuntimeError("Request failed without raising an exception.")
+        return self._request_url(self.api_url(), params)
